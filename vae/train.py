@@ -8,6 +8,14 @@ from torch import optim, nn
 class dataVAE(torch.nn.Module):
     def __init__(self):
         super(dataVAE, self).__init__()
+        self.encoder = nn.Sequential(nn.Linear(50 * 50, 500), nn.BatchNorm1d(500), nn.ReLU(),
+                                     nn.Linear(500, 200), nn.BatchNorm1d(200), nn.ReLU(),
+                                     nn.Linear(200, 100))
+
+        self.decoder = nn.Sequential(nn.Linear(50, 200), nn.BatchNorm1d(200), nn.ReLU(),
+                                     nn.Linear(200, 500), nn.BatchNorm1d(500), nn.ReLU(),
+                                     nn.Linear(500, 50 * 50))
+        """
         self.encoder = nn.Sequential(nn.Conv2d(3, 8 * 2 , 7, stride=3), nn.BatchNorm2d(8*2), nn.ReLU(),
                                      nn.Conv2d(8 * 2, 16 * 2, 5, stride=2), nn.BatchNorm2d(16*2), nn.ReLU(),
                                      nn.Conv2d(16 * 2, 32 * 2, 5, stride=2), nn.BatchNorm2d(32 * 2), nn.ReLU(),
@@ -18,14 +26,18 @@ class dataVAE(torch.nn.Module):
                                      nn.ConvTranspose2d(4, 8, 4, stride=2, padding=0), nn.BatchNorm2d(8), nn.ReLU(),
                                      nn.ConvTranspose2d(8, 16, 3, stride=2, padding=0), nn.BatchNorm2d(16), nn.ReLU(),
                                      nn.ConvTranspose2d(16, 3, 3, stride=2, padding=0))
+        """
 
     def encode(self, x):
-        x = self.encoder(x).view(x.size(0), -1)
+        x = x.view(x.size(0), 50 * 50)
+        x = self.encoder(x)
+        #x = x.view(x.size(0), -1)
         return x[:, :x.size(1)//2], x[:, x.size(1)//2:]
 
     def decode(self, z):
-        z = z.view(z.size(0), 2, 8, 8)
+        #z = z.view(z.size(0), 2, 8, 8)
         x_recon = self.decoder(z)
+        x_recon = x_recon.view(x_recon.size(0), 50, 50)
         return x_recon
 
     def sample(self, mu, sigma):
@@ -39,7 +51,7 @@ class dataVAE(torch.nn.Module):
 
 def lossfunc(img_t, img_recon, sigma, mu):
     REC = F.mse_loss(img_recon, img_t)
-    KLD = 0# -0.5 * (1 + torch.log(sigma.pow(2)) - mu.pow(2) - sigma.pow(2)).mean()
+    KLD = -0.5 * (1 + torch.log(sigma.pow(2)) - mu.pow(2) - sigma.pow(2)).mean()
     return REC + KLD
 
 def train(model, train_loader):
@@ -50,11 +62,15 @@ def train(model, train_loader):
     for batch_i, (x, class_num) in enumerate(train_loader):
         optimizer.zero_grad()
 
+        x = x.mean(dim=1)
+
         x_recon, mu, sigma = model(x.to(device), class_num)
 
         loss = lossfunc(x.to(device), x_recon, mu, sigma)
 
         loss.backward()
+
+        optimizer.step()
 
         L += loss.item()
 

@@ -57,7 +57,7 @@ class dataGen(Dataset):
     def __len__(self):
         return len(self.img_files)
 
-    def extract(self, img_t, target, rand, size=163, gamma=0.003):
+    def extract(self, img_t, target, rand, size=50, gamma=0.003):
         W, H = img_t.size(2), img_t.size(1)
         points = target['points']
 
