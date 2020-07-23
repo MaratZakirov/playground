@@ -38,28 +38,30 @@ class dataVAE(torch.nn.Module):
     def encode(self, x):
         x = self.encoder(x)
         x = x.view(x.size(0), -1)
-        return x[:, :x.size(1)//2], x[:, x.size(1)//2:]
+        mu = x[:, :x.size(1)//2]
+        logvar = x[:, x.size(1)//2:]
+        return mu, logvar
 
     def decode(self, z):
         z = z.view(z.size(0), z.size(1), 1, 1)
-        x_recon = self.decoder(z)
+        x_recon = F.sigmoid(self.decoder(z))
         return x_recon
 
-    def sample(self, mu, sigma):
-        return mu + sigma * torch.randn(sigma.shape).to(mu.device)
+    def sample(self, mu, logvar):
+        return mu + torch.exp(0.5 * logvar) * torch.randn_like(mu)
 
     def forward(self, x, class_num):
         assert x.size(2) == x.size(3) == self.isize, 'image size check failed'
-        mu, sigma = self.encode(x)
-        assert mu.size(1) == sigma.size(1) == self.zsize, 'Encoder size check failed'
-        z = self.sample(mu, sigma)
+        mu, logvar = self.encode(x)
+        assert mu.size(1) == logvar.size(1) == self.zsize, 'Encoder size check failed'
+        z = self.sample(mu, logvar)
         x_recon = self.decode(z)
         assert x_recon.shape == x.shape, 'Decoder size check failed'
-        return x_recon, mu, sigma
+        return x_recon, mu, logvar
 
-def lossfunc(img_t, img_recon, sigma, mu):
-    REC = F.mse_loss(img_recon, img_t)
-    KLD = -0.5 * (1 + torch.log(sigma.pow(2)) - mu.pow(2) - sigma.pow(2)).mean()
+def lossfunc(img_t, img_recon, logvar, mu):
+    REC = F.binary_cross_entropy(img_recon, img_t)
+    KLD = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp()).mean()
     return REC + KLD
 
 def train(model, train_loader):
@@ -70,8 +72,8 @@ def train(model, train_loader):
     for batch_i, (x, class_num) in enumerate(train_loader):
         optimizer.zero_grad()
 
-        x_recon, mu, sigma = model(x.to(device), class_num)
-        loss = lossfunc(x.to(device), x_recon, mu, sigma)
+        x_recon, mu, logvar = model(x.to(device), class_num)
+        loss = lossfunc(x.to(device), x_recon, mu, logvar)
 
         loss.backward()
         optimizer.step()
@@ -89,20 +91,20 @@ def test(model, test_loader):
     L = 0
 
     mu_s    = []
-    sigma_s = []
+    logvar_s = []
 
     with torch.no_grad():
         for batch_i, (x, class_num) in enumerate(test_loader):
-            x_recon, mu, sigma = model(x.to(device), class_num)
-            loss = lossfunc(x.to(device), x_recon, mu, sigma)
+            x_recon, mu, logvar = model(x.to(device), class_num)
+            loss = lossfunc(x.to(device), x_recon, mu, logvar)
             L += loss.item()
             if batch_i % 10 == 0:
                 print('\t', batch_i, 'loss:', loss.item())
             mu_s.append(mu.cpu())
-            sigma_s.append(sigma.cpu())
+            logvar_s.append(logvar.cpu())
 
     mu_s = torch.cat(mu_s)
-    sigma_s = torch.cat(sigma_s)
+    sigma_s = torch.exp(0.5*torch.cat(logvar_s))
 
     print('||||||||||| STAT REPORT ||||||||||||||')
     print('E(z_mean)', mu_s.mean(dim=0))
@@ -129,7 +131,7 @@ parser.add_argument('--train', type=str, default='/home/marat/dataset/photo_birk
                     help='how many batches to wait before logging training status')
 parser.add_argument('--test', type=str, default='/home/marat/dataset/photo_birka/part1/test.txt.true',
                     help='how many batches to wait before logging training status')
-parser.add_argument('--pretrained', type=str, default='vae2.model',
+parser.add_argument('--pretrained', type=str, default='',
                     help='loading pretrained model')
 args = parser.parse_args()
 
@@ -151,11 +153,10 @@ test_loader = DataLoader(dataGen(args.test, device), batch_size=args.batch_size,
 
 for epoch in range(args.epochs):
     print('=== Epoch:', epoch, '===')
-    #train_loss = train(model, train_loader)
-    #print('>> Epoch', epoch, 'train loss:', train_loss)
+    train_loss = train(model, train_loader)
+    print('>> Epoch', epoch, 'train loss:', train_loss)
     test_loss = test(model, test_loader)
     print('>> Epoch', epoch, 'test loss:', test_loss)
-    exit()
     scheduler.step()
 
 torch.save(model, 'vae.model')
