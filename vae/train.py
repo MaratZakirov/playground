@@ -6,47 +6,54 @@ from datagen import *
 from torch import optim, nn
 
 class dataVAE(torch.nn.Module):
-    def __init__(self):
+    def __init__(self, isize=160, zsize=64):
         super(dataVAE, self).__init__()
-        self.encoder = nn.Sequential(nn.Linear(50 * 50, 500), nn.BatchNorm1d(500), nn.ReLU(),
-                                     nn.Linear(500, 200), nn.BatchNorm1d(200), nn.ReLU(),
-                                     nn.Linear(200, 100))
 
-        self.decoder = nn.Sequential(nn.Linear(50, 200), nn.BatchNorm1d(200), nn.ReLU(),
-                                     nn.Linear(200, 500), nn.BatchNorm1d(500), nn.ReLU(),
-                                     nn.Linear(500, 50 * 50))
-        """
-        self.encoder = nn.Sequential(nn.Conv2d(3, 8 * 2 , 7, stride=3), nn.BatchNorm2d(8*2), nn.ReLU(),
-                                     nn.Conv2d(8 * 2, 16 * 2, 5, stride=2), nn.BatchNorm2d(16*2), nn.ReLU(),
-                                     nn.Conv2d(16 * 2, 32 * 2, 5, stride=2), nn.BatchNorm2d(32 * 2), nn.ReLU(),
-                                     nn.Conv2d(32 * 2, 64 * 2, 4, stride=2), nn.BatchNorm2d(64 * 2), nn.ReLU(),
-                                     nn.Conv2d(64 * 2, 128 * 2, 3, stride=2))
+        self.isize = isize
+        self.zsize = zsize
 
-        self.decoder = nn.Sequential(nn.ConvTranspose2d(2, 4, 5, stride=2, padding=0), nn.BatchNorm2d(4), nn.ReLU(),
-                                     nn.ConvTranspose2d(4, 8, 4, stride=2, padding=0), nn.BatchNorm2d(8), nn.ReLU(),
-                                     nn.ConvTranspose2d(8, 16, 3, stride=2, padding=0), nn.BatchNorm2d(16), nn.ReLU(),
-                                     nn.ConvTranspose2d(16, 3, 3, stride=2, padding=0))
-        """
+        self.encoder = nn.Sequential(nn.Conv2d(3,        zsize//8, 7, stride=2),
+                                     nn.BatchNorm2d(zsize//8), nn.ReLU(),
+                                     nn.Conv2d(zsize//8, zsize//4, 7, stride=2),
+                                     nn.BatchNorm2d(zsize//4), nn.ReLU(),
+                                     nn.Conv2d(zsize//4, zsize//2, 5, stride=2),
+                                     nn.BatchNorm2d(zsize//2), nn.ReLU(),
+                                     nn.Conv2d(zsize//2, zsize,    5, stride=2),
+                                     nn.BatchNorm2d(zsize), nn.ReLU(),
+                                     nn.Conv2d(zsize,    zsize*2,  5, stride=2))
+
+        self.decoder = nn.Sequential(nn.ConvTranspose2d(zsize,     zsize,     4, stride=1, padding=0),
+                                     nn.BatchNorm2d(zsize), nn.ReLU(),
+                                     nn.ConvTranspose2d(zsize,     zsize//2,  4, stride=2, padding=0),
+                                     nn.BatchNorm2d(zsize//2), nn.ReLU(),
+                                     nn.ConvTranspose2d(zsize//2,  zsize//4,  4, stride=2, padding=1),
+                                     nn.BatchNorm2d(zsize//4), nn.ReLU(),
+                                     nn.ConvTranspose2d(zsize//4,  zsize//8,  4, stride=2, padding=1),
+                                     nn.BatchNorm2d(zsize//8), nn.ReLU(),
+                                     nn.ConvTranspose2d(zsize//8,  zsize//16, 4, stride=2, padding=1),
+                                     nn.BatchNorm2d(zsize//16), nn.ReLU(),
+                                     nn.ConvTranspose2d(zsize//16, 3,         4, stride=2, padding=1))
 
     def encode(self, x):
-        x = x.view(x.size(0), 50 * 50)
         x = self.encoder(x)
-        #x = x.view(x.size(0), -1)
+        x = x.view(x.size(0), -1)
         return x[:, :x.size(1)//2], x[:, x.size(1)//2:]
 
     def decode(self, z):
-        #z = z.view(z.size(0), 2, 8, 8)
+        z = z.view(z.size(0), z.size(1), 1, 1)
         x_recon = self.decoder(z)
-        x_recon = x_recon.view(x_recon.size(0), 50, 50)
         return x_recon
 
     def sample(self, mu, sigma):
         return mu + sigma * torch.randn(sigma.shape).to(mu.device)
 
     def forward(self, x, class_num):
+        assert x.size(2) == x.size(3) == self.isize, 'image size check failed'
         mu, sigma = self.encode(x)
+        assert mu.size(1) == sigma.size(1) == self.zsize, 'Encoder size check failed'
         z = self.sample(mu, sigma)
         x_recon = self.decode(z)
+        assert x_recon.shape == x.shape, 'Decoder size check failed'
         return x_recon, mu, sigma
 
 def lossfunc(img_t, img_recon, sigma, mu):
@@ -61,8 +68,6 @@ def train(model, train_loader):
 
     for batch_i, (x, class_num) in enumerate(train_loader):
         optimizer.zero_grad()
-
-        x = x.mean(dim=1)
 
         x_recon, mu, sigma = model(x.to(device), class_num)
 
@@ -84,7 +89,7 @@ def test(model, test_loader):
     pass
 
 parser = argparse.ArgumentParser(description='VAE MNIST Example')
-parser.add_argument('--batch-size', type=int, default=4, metavar='N',
+parser.add_argument('--batch-size', type=int, default=2, metavar='N',
                     help='input batch size for training (default: 128)')
 parser.add_argument('--epochs', type=int, default=10, metavar='N',
                     help='number of epochs to train (default: 10)')

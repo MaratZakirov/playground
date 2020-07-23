@@ -57,15 +57,17 @@ class dataGen(Dataset):
     def __len__(self):
         return len(self.img_files)
 
-    def extract(self, img_t, target, rand, size=50, gamma=0.003):
+    def extract(self, img_t, target, rand, size=160, gamma=0.003, keep=0.5):
         W, H = img_t.size(2), img_t.size(1)
         points = target['points']
 
         assert rand
 
         # Select just one
-        points = points[(target['class'] <= 9) * (target['class'] >= 0)]
-        class_num = target['class'][(target['class'] <= 9) * (target['class'] >= 0)]
+        I_keep = torch.where((target['class'] <= 9) * (target['class'] >= 0))[0]
+        I_keep = I_keep[torch.randperm(len(I_keep))[:int(keep * len(I_keep))]]
+        points = points[I_keep]
+        class_num = target['class'][I_keep]
 
         # Perturbation
         points = points + gamma * torch.randn(points.shape).to(self.device)
