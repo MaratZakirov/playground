@@ -88,6 +88,9 @@ def test(model, test_loader):
 
     L = 0
 
+    mu_s    = []
+    sigma_s = []
+
     with torch.no_grad():
         for batch_i, (x, class_num) in enumerate(test_loader):
             x_recon, mu, sigma = model(x.to(device), class_num)
@@ -95,6 +98,19 @@ def test(model, test_loader):
             L += loss.item()
             if batch_i % 10 == 0:
                 print('\t', batch_i, 'loss:', loss.item())
+            mu_s.append(mu.cpu())
+            sigma_s.append(sigma.cpu())
+
+    mu_s = torch.cat(mu_s)
+    sigma_s = torch.cat(sigma_s)
+
+    print('||||||||||| STAT REPORT ||||||||||||||')
+    print('E(z_mean)', mu_s.mean(dim=0))
+    print('E(z_sigma)', sigma_s.mean(dim=0))
+    print('Divergence of:')
+    print('S(z_mean)', mu_s.std(dim=0))
+    print('S(z_sigma)', sigma_s.std(dim=0))
+    print('||||||||||| END STAT REPORT ||||||||||')
 
     return L/len(test_loader)
 
@@ -113,12 +129,18 @@ parser.add_argument('--train', type=str, default='/home/marat/dataset/photo_birk
                     help='how many batches to wait before logging training status')
 parser.add_argument('--test', type=str, default='/home/marat/dataset/photo_birka/part1/test.txt.true',
                     help='how many batches to wait before logging training status')
+parser.add_argument('--pretrained', type=str, default='vae2.model',
+                    help='loading pretrained model')
 args = parser.parse_args()
 
 args.cuda = args.cuda and torch.cuda.is_available()
 device = torch.device("cuda" if args.cuda else "cpu")
 
-model = dataVAE().to(device)
+if len(args.pretrained) > 0:
+    model = torch.load(args.pretrained).to(device)
+else:
+    model = dataVAE().to(device)
+
 optimizer = optim.AdamW(model.parameters(), lr=0.001)
 scheduler = StepLR(optimizer, step_size=10, gamma=0.5)
 
@@ -129,10 +151,11 @@ test_loader = DataLoader(dataGen(args.test, device), batch_size=args.batch_size,
 
 for epoch in range(args.epochs):
     print('=== Epoch:', epoch, '===')
-    train_loss = train(model, train_loader)
-    print('>> Epoch', epoch, 'train loss:', train_loss)
+    #train_loss = train(model, train_loader)
+    #print('>> Epoch', epoch, 'train loss:', train_loss)
     test_loss = test(model, test_loader)
     print('>> Epoch', epoch, 'test loss:', test_loss)
+    exit()
     scheduler.step()
 
 torch.save(model, 'vae.model')
