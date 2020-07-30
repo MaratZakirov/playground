@@ -14,9 +14,10 @@ import torchvision.utils as vutils
 from datagen import *
 
 parser = argparse.ArgumentParser()
+parser.add_argument('--debug', type=bool, default=True, help='debugging mode')
 parser.add_argument('--dataroot', default='/mnt/hugedisk/data/ganbirka128/', required=False, help='path to dataset')
 parser.add_argument('--workers', type=int, help='number of data loading workers', default=2)
-parser.add_argument('--batchSize', type=int, default=16, help='input batch size')
+parser.add_argument('--batchSize', type=int, default=100, help='input batch size')
 parser.add_argument('--imageSize', type=int, default=128, help='the height / width of the input image to network')
 parser.add_argument('--nz', type=int, default=100, help='size of the latent z vector')
 parser.add_argument('--ngf', type=int, default=128)
@@ -162,11 +163,11 @@ if opt.netD != '':
     netD.load_state_dict(torch.load(opt.netD))
 print(netD)
 
-criterion = nn.BCELoss()
+bce = nn.BCELoss()
+cel = nn.CrossEntropyLoss()
 
 fixed_noise = torch.randn(opt.batchSize, nz, 1, 1, device=device)
-real_label = 1
-fake_label = 0
+fixed_class = torch.arange(10, device=device).repeat(10)
 
 # setup optimizer
 optimizerD = optim.Adam(netD.parameters(), lr=opt.lr, betas=(opt.beta1, 0.999))
@@ -176,58 +177,69 @@ if opt.dry_run:
     opt.niter = 1
 
 for epoch in range(opt.niter):
-    for i, data in enumerate(dataloader, 0):
+    for i, (x, x_class) in enumerate(dataloader, 0):
         ############################
         # (1) Update D network: maximize log(D(x)) + log(1 - D(G(z)))
         ###########################
         # train with real
-        netD.zero_grad()
-        real_cpu = data[0].to(device)
-        batch_size = real_cpu.size(0)
-        label = torch.full((batch_size,), real_label,
-                           dtype=real_cpu.dtype, device=device)
+        batch_size = len(x)
 
-        d_real, d_class = netD(real_cpu)
-        errD_real = criterion(d_real, label)
+        # Generate adversiral labels
+        label0 = torch.full((batch_size,), 0.0, device=device)
+        label1 = torch.full((batch_size,), 1.0, device=device)
+
+        # Get true data
+        x = x.to(device)
+        x_class = x_class.to(device)
+
+        # Get fake data
+        z = torch.randn(batch_size, nz, 1, 1, device=device)
+        zx_class = torch.randint(low=0, high=10, size=(batch_size, ), device=device)
+
+        # Train on real
+        netD.zero_grad()
+        x_p_label, x_p_class = netD(x)
+        errD_real = bce(x_p_label, label1) + cel(x_p_class, x_class)
         errD_real.backward()
-        D_x = d_real.mean().item()
+
+        if opt.debug:
+            D_x = x_p_label.mean().item()
 
         # train with fake
-        noise = torch.randn(batch_size, nz, 1, 1, device=device)
-        fake = netG(noise, data[1])
-        label.fill_(fake_label)
-        d_real, d_class = netD(fake.detach())
-        errD_fake = criterion(d_real, label)
+        zx = netG(z, zx_class)
+        zx_p_label, zx_p_class = netD(zx.detach())
+        errD_fake = bce(zx_p_label, label0) + cel(zx_p_class, zx_class)
         errD_fake.backward()
-        D_G_z1 = d_real.mean().item()
-        errD = errD_real + errD_fake
+
         optimizerD.step()
+
+        if opt.debug:
+            D_G_z1 = zx_p_label.mean().item()
+            errD = errD_real + errD_fake
 
         ############################
         # (2) Update G network: maximize log(D(G(z)))
         ###########################
         netG.zero_grad()
-        label.fill_(real_label)  # fake labels are real for generator cost
-        d_real, d_class = netD(fake)
-        errG = criterion(d_real, label)
+        zx_p_label, zx_p_class = netD(zx)
+        errG = bce(zx_p_label, label1) + cel(zx_p_class, zx_class)
         errG.backward()
-        D_G_z2 = d_real.mean().item()
         optimizerG.step()
 
-        print('[%d/%d][%d/%d] Loss_D: %.4f Loss_G: %.4f D(x): %.4f D(G(z)): %.4f / %.4f'
-              % (epoch, opt.niter, i, len(dataloader),
-                 errD.item(), errG.item(), D_x, D_G_z1, D_G_z2))
-        if i % 100 == 0:
-            vutils.save_image(real_cpu,
-                              '%s/real_samples.png' % opt.outf,
-                              normalize=True, nrow=int(torch.sqrt(opt.batchSize).item()))
-            fake = netG(fixed_noise)
-            vutils.save_image(fake.detach(),
-                              '%s/fake_samples_epoch_%03d.png' % (opt.outf, epoch),
-                              normalize=True, nrow=int(torch.sqrt(opt.batchSize).item()))
+        if opt.debug:
+            D_G_z2 = zx_p_label.mean().item()
+            print('[%d/%d][%d/%d] Loss_D: %.4f Loss_G: %.4f D(x): %.4f D(G(z)): %.4f / %.4f'
+                  % (epoch, opt.niter, i, len(dataloader), errD.item(), errG.item(), D_x, D_G_z1, D_G_z2))
+
+        if i == 0:
+            vutils.save_image(x, '%s/real_samples.png' % opt.outf, normalize=True, nrow=10)
+            fake = netG(fixed_noise, fixed_class)
+            vutils.save_image(fake.detach(), '%s/fake_samples_epoch_%03d.png' % (opt.outf, epoch),
+                              normalize=True, nrow=10)
 
         if opt.dry_run:
             break
+
     # do checkpointing
     if epoch % 20 == 0:
         torch.save(netG.state_dict(), '%s/netG_epoch_%d.pth' % (opt.outf, epoch))
