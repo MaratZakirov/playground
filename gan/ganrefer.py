@@ -11,7 +11,6 @@ import torch.utils.data
 import torchvision.datasets as dset
 import torchvision.transforms as transforms
 import torchvision.utils as vutils
-from datagen import *
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--debug', type=bool, default=True, help='debugging mode')
@@ -56,7 +55,8 @@ if torch.cuda.is_available() and not opt.cuda:
 # folder dataset
 dataset = dset.ImageFolder(root=opt.dataroot,
                            transform=transforms.Compose([transforms.Resize(opt.imageSize),
-                                                         transforms.ToTensor()]))
+                                                         transforms.ToTensor(),
+                                                         transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])]))
 nc = 3
 
 assert dataset
@@ -101,11 +101,12 @@ class Generator(nn.Module):
                                     nn.BatchNorm2d(ngf // 2),
                                     nn.LeakyReLU(0.2, inplace=True))
         self.block5 = nn.Sequential(nn.ConvTranspose2d(ngf // 2, nc, 4, 2, 1, bias=False),
-                                    nn.Sigmoid())
+                                    nn.Tanh())
 
     def forward(self, z, class_n):
         emb = torch.zeros(z.size(0), self.n_classes).to(device)
-        emb[:, class_n] = 1.0
+        i = torch.arange(len(class_n)).to(device)
+        emb[i, class_n] = 1.0
         z = torch.cat([z, emb[..., None, None]], dim=1)
         x = self.block0(z)
         x = self.upsample(x) + self.block1(x)
@@ -116,7 +117,7 @@ class Generator(nn.Module):
         return x
 
 
-netG = Generator(10).to(device)
+netG = Generator(len(dataset.classes)).to(device)
 netG.apply(weights_init)
 if opt.netG != '':
     netG.load_state_dict(torch.load(opt.netG))
@@ -125,8 +126,7 @@ print(netG)
 class Discriminator(nn.Module):
     def __init__(self, n_classes):
         super(Discriminator, self).__init__()
-
-        self.downsample = lambda x : torch.cat([nn.Upsample(scale_factor=0.5)(x), nn.Upsample(scale_factor=0.5)(x)], dim=1)
+        self.n_classes = n_classes
         self.block0 = nn.Sequential(nn.Conv2d(nc, ndf, 4, 2, 1, bias=False),
                                     nn.BatchNorm2d(ndf),
                                     nn.LeakyReLU(0.2, inplace=True))
@@ -139,35 +139,33 @@ class Discriminator(nn.Module):
         self.block3 = nn.Sequential(nn.Conv2d(ndf * 4, ndf * 8, 4, 2, 1, bias=False),
                                     nn.BatchNorm2d(ndf * 8),
                                     nn.LeakyReLU(0.2, inplace=True))
-        self.block4 = nn.Sequential(nn.Conv2d(ndf * 8, ndf * 8, 8, 1, 0, bias=False),
-                                    nn.BatchNorm2d(ndf * 8),
-                                    nn.LeakyReLU(0.2, inplace=True))
-        self.block_fr = nn.Sequential(nn.Linear(ndf * 8, 1), nn.Sigmoid())
-        self.block_class = nn.Sequential(nn.Linear(ndf * 8, n_classes), nn.Softmax())
+        self.block4 = nn.Sequential(nn.Conv2d(ndf * 8, n_classes + 1, 8, 1, 0, bias=False))
 
     def forward(self, input):
         x = self.block0(input)
-        x = self.downsample(x) + self.block1(x)
-        x = self.downsample(x) + self.block2(x)
-        x = self.downsample(x) + self.block3(x)
+        x = self.block1(x)
+        x = self.block2(x)
+        x = self.block3(x)
         x = self.block4(x)
         x = x.view(x.size(0), -1)
-        x_fr = self.block_fr(x)
-        x_class = self.block_class(x)
+        x_class = nn.Softmax()(x[:, :self.n_classes])
+        x_fr = nn.Sigmoid()(x[:, self.n_classes:])
         return x_fr, x_class
 
-
-netD = Discriminator(10).to(device)
+netD = Discriminator(len(dataset.classes)).to(device)
 netD.apply(weights_init)
 if opt.netD != '':
     netD.load_state_dict(torch.load(opt.netD))
 print(netD)
 
 bce = nn.BCELoss()
-cel = nn.CrossEntropyLoss()
+cse = nn.CrossEntropyLoss()
 
 fixed_noise = torch.randn(opt.batchSize, nz, 1, 1, device=device)
-fixed_class = torch.arange(10, device=device).repeat(10)
+fixed_class = torch.arange(len(dataset.classes), device=device).repeat(len(dataset.classes))
+
+real_label = 1
+fake_label = 0
 
 # setup optimizer
 optimizerD = optim.Adam(netD.parameters(), lr=opt.lr, betas=(opt.beta1, 0.999))
@@ -177,64 +175,56 @@ if opt.dry_run:
     opt.niter = 1
 
 for epoch in range(opt.niter):
-    for i, (x, x_class) in enumerate(dataloader, 0):
+    for i, data in enumerate(dataloader, 0):
         ############################
         # (1) Update D network: maximize log(D(x)) + log(1 - D(G(z)))
         ###########################
         # train with real
-        batch_size = len(x)
-
-        # Generate adversiral labels
-        label0 = torch.full((batch_size,), 0.0, device=device)
-        label1 = torch.full((batch_size,), 1.0, device=device)
-
-        # Get true data
-        x = x.to(device)
-        x_class = x_class.to(device)
-
-        # Get fake data
-        z = torch.randn(batch_size, nz, 1, 1, device=device)
-        zx_class = torch.randint(low=0, high=10, size=(batch_size, ), device=device)
-
-        # Train on real
         netD.zero_grad()
-        x_p_label, x_p_class = netD(x)
-        errD_real = bce(x_p_label, label1) + cel(x_p_class, x_class)
-        errD_real.backward()
+        real_cpu = data[0].to(device)
+        real_class = data[1].to(device)
+        batch_size = real_cpu.size(0)
+        label = torch.full((batch_size,), real_label,
+                           dtype=real_cpu.dtype, device=device)
 
-        if opt.debug:
-            D_x = x_p_label.mean().item()
+        output, outclass = netD(real_cpu)
+        errD_real = bce(output, label) + cse(outclass, real_class)
+        errD_real.backward()
+        D_x = output.mean().item()
 
         # train with fake
-        zx = netG(z, zx_class)
-        zx_p_label, zx_p_class = netD(zx.detach())
-        errD_fake = bce(zx_p_label, label0) + cel(zx_p_class, zx_class)
+        noise = torch.randn(batch_size, nz, 1, 1, device=device)
+        fakeclass = torch.randint(low=0, high=len(dataset.classes), size=(batch_size, ), device=device)
+        fake = netG(noise, fakeclass)
+        label.fill_(fake_label)
+        output, outclass = netD(fake.detach())
+        errD_fake = bce(output, label) + cse(outclass, fakeclass)
         errD_fake.backward()
-
+        D_G_z1 = output.mean().item()
+        errD = errD_real + errD_fake
         optimizerD.step()
-
-        if opt.debug:
-            D_G_z1 = zx_p_label.mean().item()
-            errD = errD_real + errD_fake
 
         ############################
         # (2) Update G network: maximize log(D(G(z)))
         ###########################
         netG.zero_grad()
-        zx_p_label, zx_p_class = netD(zx)
-        errG = bce(zx_p_label, label1) + cel(zx_p_class, zx_class)
+        label.fill_(real_label)  # fake labels are real for generator cost
+        output, outclass = netD(fake)
+        errG = bce(output, label) + cse(outclass, fakeclass)
         errG.backward()
+        D_G_z2 = output.mean().item()
         optimizerG.step()
 
-        if opt.debug:
-            D_G_z2 = zx_p_label.mean().item()
-            print('[%d/%d][%d/%d] Loss_D: %.4f Loss_G: %.4f D(x): %.4f D(G(z)): %.4f / %.4f'
-                  % (epoch, opt.niter, i, len(dataloader), errD.item(), errG.item(), D_x, D_G_z1, D_G_z2))
-
+        print('[%d/%d][%d/%d] Loss_D: %.4f Loss_G: %.4f D(x): %.4f D(G(z)): %.4f / %.4f'
+              % (epoch, opt.niter, i, len(dataloader),
+                 errD.item(), errG.item(), D_x, D_G_z1, D_G_z2))
         if i == 0:
-            vutils.save_image(x, '%s/real_samples.png' % opt.outf, normalize=True, nrow=10)
+            vutils.save_image(real_cpu,
+                              '%s/real_samples.png' % opt.outf,
+                              normalize=True, nrow=10)
             fake = netG(fixed_noise, fixed_class)
-            vutils.save_image(fake.detach(), '%s/fake_samples_epoch_%03d.png' % (opt.outf, epoch),
+            vutils.save_image(fake.detach(),
+                              '%s/fake_samples_epoch_%03d.png' % (opt.outf, epoch),
                               normalize=True, nrow=10)
 
         if opt.dry_run:
