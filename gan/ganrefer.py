@@ -148,7 +148,7 @@ class Discriminator(nn.Module):
         x = self.block3(x)
         x = self.block4(x)
         x = x.view(x.size(0), -1)
-        x_class = nn.Softmax()(x[:, :self.n_classes])
+        x_class = x[:, :self.n_classes]
         x_fr = nn.Sigmoid()(x[:, self.n_classes:])
         return x_fr, x_class
 
@@ -188,9 +188,15 @@ for epoch in range(opt.niter):
                            dtype=real_cpu.dtype, device=device)
 
         output, outclass = netD(real_cpu)
-        errD_real = bce(output, label) + cse(outclass, real_class)
+        csereal = cse(outclass, real_class)
+        errD_real = bce(output, label) + csereal
         errD_real.backward()
         D_x = output.mean().item()
+
+        if 0:
+            optimizerD.step()
+            print('Try classifier: ', epoch, i, csereal.item())
+            continue
 
         # train with fake
         noise = torch.randn(batch_size, nz, 1, 1, device=device)
@@ -198,7 +204,8 @@ for epoch in range(opt.niter):
         fake = netG(noise, fakeclass)
         label.fill_(fake_label)
         output, outclass = netD(fake.detach())
-        errD_fake = bce(output, label) + cse(outclass, fakeclass)
+        csefake = cse(outclass, fakeclass)
+        errD_fake = bce(output, label) + csefake
         errD_fake.backward()
         D_G_z1 = output.mean().item()
         errD = errD_real + errD_fake
@@ -210,14 +217,15 @@ for epoch in range(opt.niter):
         netG.zero_grad()
         label.fill_(real_label)  # fake labels are real for generator cost
         output, outclass = netD(fake)
-        errG = bce(output, label) + cse(outclass, fakeclass)
+        csefake2 = cse(outclass, fakeclass)
+        errG = bce(output, label) + csefake2
         errG.backward()
         D_G_z2 = output.mean().item()
         optimizerG.step()
 
-        print('[%d/%d][%d/%d] Loss_D: %.4f Loss_G: %.4f D(x): %.4f D(G(z)): %.4f / %.4f'
+        print('[%d/%d][%d/%d] Loss_D: %.4f Loss_G: %.4f D(x): %.4f D(G(z)): %.4f / %.4f C(x): %.4f C(G(z)): %.4f / %.4f'
               % (epoch, opt.niter, i, len(dataloader),
-                 errD.item(), errG.item(), D_x, D_G_z1, D_G_z2))
+                 errD.item(), errG.item(), D_x, D_G_z1, D_G_z2, csereal.item(), csefake.item(), csefake2.item()))
         if i == 0:
             vutils.save_image(real_cpu,
                               '%s/real_samples.png' % opt.outf,
