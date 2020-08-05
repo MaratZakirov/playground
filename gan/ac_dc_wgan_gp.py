@@ -44,7 +44,7 @@ class Generator(nn.Module):
 
         self.n_classes = n_classes
         self.upsample = lambda x : nn.Upsample(scale_factor=2)(x[:, :x.size(1) // 2])
-        self.block0 = nn.Sequential(nn.ConvTranspose2d(nz + n_classes, ngf * 8, 4, 1, 0, bias=False),
+        self.block0 = nn.Sequential(nn.ConvTranspose2d(nz, ngf * 8, 4, 1, 0, bias=False),
                                     nn.BatchNorm2d(ngf * 8),
                                     nn.LeakyReLU(0.2, inplace=True))
         self.block1 = nn.Sequential(nn.ConvTranspose2d(ngf * 8, ngf * 4, 4, 2, 1, bias=False),
@@ -56,12 +56,11 @@ class Generator(nn.Module):
         self.block3 = nn.Sequential(nn.ConvTranspose2d(ngf * 2, nc, 4, 2, 1, bias=False),
                                     nn.Tanh())
 
-    def forward(self, z, class_n=0):
-        #emb = torch.zeros(z.size(0), self.n_classes).to(device)
-        #i = torch.arange(len(class_n)).to(device)
-        #emb[i, class_n] = 1.0
-        #z = torch.cat([z, emb[..., None, None]], dim=1)
-
+    def forward(self, z, z_class):
+        # Setting up appropriate prefix
+        z[:, :self.n_classes] = 0
+        z[torch.arange(len(z_class)).to(device), z_class] = 1.0
+        z = z.view(z.size(0), z.size(1), 1, 1)
         x = self.block0(z)
         x = self.block1(x) + self.upsample(x)
         x = self.block2(x) + self.upsample(x)
@@ -91,14 +90,14 @@ class Discriminator(nn.Module):
         x = x.view(x.size(0), -1)
         x_class = x[:, :self.n_classes]
         validity = x[:, self.n_classes:]
-        return validity#, x_class
+        return validity, x_class
 
 
 # Loss weight for gradient penalty
 lambda_gp = 10
 
 # Initialize generator and discriminator
-generator = Generator(ngf=4, nz=opt.latent_dim, nc=1, n_classes=0).to(device)
+generator = Generator(ngf=4, nz=opt.latent_dim, nc=1, n_classes=10).to(device)
 discriminator = Discriminator(ndf=6, nc=1, n_classes=10).to(device)
 
 if 0:
@@ -120,6 +119,17 @@ dataloader = torch.utils.data.DataLoader(
     shuffle=True,
 )
 
+def sample_image(n_row, batches_done, z=None):
+    """Saves a grid of generated digits ranging from 0 to n_classes"""
+    # Sample noise
+    z_class = torch.arange(10).repeat(n_row).to(device)
+
+    if z == None:
+        z = torch.randn((n_row ** 2, opt.latent_dim), device=device)
+
+    gen_imgs = generator(z, z_class)
+    save_image(gen_imgs.data, "images/%d.png" % batches_done, nrow=n_row, normalize=True)
+
 # Optimizers
 optimizer_G = torch.optim.Adam(generator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
 optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
@@ -130,7 +140,7 @@ def compute_gradient_penalty(D, real_samples, fake_samples):
     alpha = torch.rand(real_samples.size(0), 1, 1, 1).to(device)
     # Get random interpolation between real and fake samples
     interpolates = (alpha * real_samples + ((1 - alpha) * fake_samples)).requires_grad_(True)
-    d_interpolates = D(interpolates)
+    d_interpolates, _ = D(interpolates)
 
     fake = torch.ones(real_samples.shape[0], 1, requires_grad=False).to(device)
     # Get gradient w.r.t. interpolates
@@ -147,16 +157,18 @@ def compute_gradient_penalty(D, real_samples, fake_samples):
     return gradient_penalty
 
 
+class_aux_loss = torch.nn.CrossEntropyLoss()
 # ----------
 #  Training
 # ----------
 
 batches_done = 0
 for epoch in range(opt.n_epochs):
-    for i, (imgs, _) in enumerate(dataloader):
+    for i, (imgs, target) in enumerate(dataloader):
 
         # Configure input
         real_imgs = imgs.to(device)
+        real_target = target.to(device)
 
         # ---------------------
         #  Train Discriminator
@@ -168,16 +180,22 @@ for epoch in range(opt.n_epochs):
         z = torch.randn(imgs.shape[0], opt.latent_dim, 1, 1).to(device)
 
         # Generate a batch of images
-        fake_imgs = generator(z)
+        fake_target = torch.randint(0, 10, size=(imgs.shape[0], )).to(device)
+        fake_imgs = generator(z, fake_target)
 
         # Real images
-        real_validity = discriminator(real_imgs)
+        real_validity, real_class = discriminator(real_imgs)
         # Fake images
-        fake_validity = discriminator(fake_imgs)
+        fake_validity, fake_class = discriminator(fake_imgs)
         # Gradient penalty
         gradient_penalty = compute_gradient_penalty(discriminator, real_imgs.data, fake_imgs.data)
+        # Real Cross Entropy
+        real_class_err = class_aux_loss(real_class, real_target)
+        # Fake Cross Entropy
+        fake_class_err = class_aux_loss(fake_class, fake_target)
         # Adversarial loss
-        d_loss = -torch.mean(real_validity) + torch.mean(fake_validity) + lambda_gp * gradient_penalty
+        d_loss = -torch.mean(real_validity) + torch.mean(fake_validity) + lambda_gp * gradient_penalty\
+                 + real_class_err + fake_class_err
 
         d_loss.backward()
         optimizer_D.step()
@@ -192,11 +210,14 @@ for epoch in range(opt.n_epochs):
             # -----------------
 
             # Generate a batch of images
-            fake_imgs = generator(z)
+            fake_target = torch.randint(0, 10, size=(opt.batch_size, )).to(device)
+            fake_imgs = generator(z, fake_target)
             # Loss measures generator's ability to fool the discriminator
             # Train on fake images
-            fake_validity = discriminator(fake_imgs)
-            g_loss = -torch.mean(fake_validity)
+            fake_validity, fake_class = discriminator(fake_imgs)
+            # Fake Cross Entropy
+            fake_class_err = class_aux_loss(fake_class, fake_target)
+            g_loss = -torch.mean(fake_validity) + fake_class_err
 
             g_loss.backward()
             optimizer_G.step()
@@ -207,6 +228,6 @@ for epoch in range(opt.n_epochs):
             )
 
             if batches_done % opt.sample_interval == 0:
-                save_image(fake_imgs.data[:100], "images/%d.png" % batches_done, nrow=10, normalize=True)
+                sample_image(n_row=10, batches_done=batches_done)
 
             batches_done += opt.n_critic
