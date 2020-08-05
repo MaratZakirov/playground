@@ -39,53 +39,40 @@ img_shape = (opt.channels, opt.img_size, opt.img_size)
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 class Generator(nn.Module):
-    def __init__(self):
+    def __init__(self, ngf, nz, nc, n_classes):
         super(Generator, self).__init__()
 
-        def block(in_feat, out_feat, normalize=True):
-            layers = [nn.Linear(in_feat, out_feat)]
-            if normalize:
-                layers.append(nn.BatchNorm1d(out_feat, 0.8))
-            layers.append(nn.LeakyReLU(0.2, inplace=True))
-            return layers
+        self.n_classes = n_classes
+        self.upsample = lambda x : nn.Upsample(scale_factor=2)(x[:, :x.size(1) // 2])
+        self.block0 = nn.Sequential(nn.ConvTranspose2d(nz + n_classes, ngf * 8, 4, 1, 0, bias=False),
+                                    nn.BatchNorm2d(ngf * 8),
+                                    nn.LeakyReLU(0.2, inplace=True))
+        self.block1 = nn.Sequential(nn.ConvTranspose2d(ngf * 8, ngf * 4, 4, 2, 1, bias=False),
+                                    nn.BatchNorm2d(ngf * 4),
+                                    nn.LeakyReLU(0.2, inplace=True))
+        self.block2 = nn.Sequential(nn.ConvTranspose2d(ngf * 4, ngf * 2, 4, 2, 1, bias=False),
+                                    nn.BatchNorm2d(ngf * 2),
+                                    nn.LeakyReLU(0.2, inplace=True))
+        self.block3 = nn.Sequential(nn.ConvTranspose2d(ngf * 2, nc, 4, 2, 1, bias=False),
+                                    nn.Tanh())
 
-        self.model = nn.Sequential(
-            *block(opt.latent_dim, 128, normalize=False),
-            *block(128, 256),
-            *block(256, 512),
-            *block(512, 1024),
-            nn.Linear(1024, int(np.prod(img_shape))),
-            nn.Tanh()
-        )
+    def forward(self, z, class_n=0):
+        #emb = torch.zeros(z.size(0), self.n_classes).to(device)
+        #i = torch.arange(len(class_n)).to(device)
+        #emb[i, class_n] = 1.0
+        #z = torch.cat([z, emb[..., None, None]], dim=1)
 
-    def forward(self, z):
-        img = self.model(z)
-        img = img.view(img.shape[0], *img_shape)
-        return img
-
+        x = self.block0(z)
+        x = self.block1(x) + self.upsample(x)
+        x = self.block2(x) + self.upsample(x)
+        x = self.block3(x)
+        return x
 
 class Discriminator(nn.Module):
-    def __init__(self):
+    def __init__(self, ndf, nc, n_classes):
         super(Discriminator, self).__init__()
-
-        self.model = nn.Sequential(
-            nn.Linear(int(np.prod(img_shape)), 512),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Linear(512, 256),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Linear(256, 1),
-        )
-
-    def forward(self, img):
-        img_flat = img.view(img.shape[0], -1)
-        validity = self.model(img_flat)
-        return validity
-
-class Discriminator2(nn.Module):
-    def __init__(self, ndf, n_classes):
-        super(Discriminator2, self).__init__()
         self.n_classes = n_classes
-        self.block0 = nn.Sequential(nn.Conv2d(1, ndf, 4, 2, 1, bias=False),
+        self.block0 = nn.Sequential(nn.Conv2d(nc, ndf, 4, 2, 1, bias=False),
                                     nn.LeakyReLU(0.2, inplace=True))
         self.block1 = nn.Sequential(nn.Conv2d(ndf, ndf * 2, 4, 2, 1, bias=False),
                                     nn.LeakyReLU(0.2, inplace=True))
@@ -93,7 +80,7 @@ class Discriminator2(nn.Module):
                                     nn.LeakyReLU(0.2, inplace=True))
         self.block3 = nn.Sequential(nn.Conv2d(ndf * 4, ndf * 8, 4, 2, 1, bias=False),
                                     nn.LeakyReLU(0.2, inplace=True))
-        self.block4 = nn.Sequential(nn.Conv2d(ndf * 8, n_classes + 1, 8, 1, 0, bias=False))
+        self.block4 = nn.Sequential(nn.Conv2d(ndf * 8, n_classes + 1, 2, 1, 0, bias=False))
 
     def forward(self, input):
         x = self.block0(input)
@@ -103,19 +90,23 @@ class Discriminator2(nn.Module):
         x = self.block4(x)
         x = x.view(x.size(0), -1)
         x_class = x[:, :self.n_classes]
-        x_fr = nn.Sigmoid()(x[:, self.n_classes:])
-        return x_fr, x_class
+        validity = x[:, self.n_classes:]
+        return validity#, x_class
 
 
 # Loss weight for gradient penalty
 lambda_gp = 10
 
 # Initialize generator and discriminator
-generator = Generator().to(device)
-discriminator = Discriminator().to(device)
+generator = Generator(ngf=4, nz=opt.latent_dim, nc=1, n_classes=0).to(device)
+discriminator = Discriminator(ndf=6, nc=1, n_classes=10).to(device)
 
-# Configure data loader
-os.makedirs("./data/mnist", exist_ok=True)
+if 0:
+    torch.save(generator.state_dict(), 'g.temp')
+    torch.save(discriminator.state_dict(), 'd.temp')
+    exit()
+
+# Configure data loadergeos.makedirs("./data/mnist", exist_ok=True)
 dataloader = torch.utils.data.DataLoader(
     datasets.MNIST(
         "./data/mnist",
@@ -174,7 +165,7 @@ for epoch in range(opt.n_epochs):
         optimizer_D.zero_grad()
 
         # Sample noise as generator input
-        z = torch.randn(imgs.shape[0], opt.latent_dim).to(device)
+        z = torch.randn(imgs.shape[0], opt.latent_dim, 1, 1).to(device)
 
         # Generate a batch of images
         fake_imgs = generator(z)
@@ -216,6 +207,6 @@ for epoch in range(opt.n_epochs):
             )
 
             if batches_done % opt.sample_interval == 0:
-                save_image(fake_imgs.data[:25], "images/%d.png" % batches_done, nrow=5, normalize=True)
+                save_image(fake_imgs.data[:100], "images/%d.png" % batches_done, nrow=10, normalize=True)
 
             batches_done += opt.n_critic
