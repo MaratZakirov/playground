@@ -10,6 +10,7 @@ from torchvision.utils import save_image
 from torch.utils.data import DataLoader
 from torchvision import datasets
 from torch.autograd import Variable
+import torchvision.datasets as dset
 
 import torch.nn as nn
 import torch.nn.functional as F
@@ -19,22 +20,19 @@ import torch
 os.makedirs("images", exist_ok=True)
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--n_epochs", type=int, default=1000, help="number of epochs of training")
-parser.add_argument("--batch_size", type=int, default=2048, help="size of the batches")
+parser.add_argument("--n_epochs", type=int, default=5000, help="number of epochs of training")
+parser.add_argument("--batch_size", type=int, default=1024, help="size of the batches")
 parser.add_argument("--lr", type=float, default=0.0002, help="adam: learning rate")
 parser.add_argument("--b1", type=float, default=0.5, help="adam: decay of first order momentum of gradient")
 parser.add_argument("--b2", type=float, default=0.999, help="adam: decay of first order momentum of gradient")
 parser.add_argument("--n_cpu", type=int, default=8, help="number of cpu threads to use during batch generation")
 parser.add_argument("--latent_dim", type=int, default=100, help="dimensionality of the latent space")
-parser.add_argument("--img_size", type=int, default=64, help="size of each image dimension")
-parser.add_argument("--channels", type=int, default=1, help="number of image channels")
+parser.add_argument("--img_size", type=int, default=128, help="size of each image dimension")
 parser.add_argument("--n_critic", type=int, default=5, help="number of training steps for discriminator per iter")
-parser.add_argument("--clip_value", type=float, default=0.01, help="lower and upper clip value for disc. weights")
 parser.add_argument("--sample_interval", type=int, default=400, help="interval betwen image samples")
+parser.add_argument('--dataroot', default='', required=False, help='path to dataset')
 opt = parser.parse_args()
 print(opt)
-
-img_shape = (opt.channels, opt.img_size, opt.img_size)
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -56,7 +54,10 @@ class Generator(nn.Module):
         self.block3 = nn.Sequential(nn.ConvTranspose2d(ngf * 2, ngf, 4, 2, 1, bias=False),
                                     nn.BatchNorm2d(ngf),
                                     nn.LeakyReLU(0.2, inplace=True))
-        self.block4 = nn.Sequential(nn.ConvTranspose2d(ngf, nc, 4, 2, 1, bias=False),
+        self.block4 = nn.Sequential(nn.ConvTranspose2d(ngf, ngf // 2, 4, 2, 1, bias=False),
+                                    nn.BatchNorm2d(ngf // 2),
+                                    nn.LeakyReLU(0.2, inplace=True))
+        self.block5 = nn.Sequential(nn.ConvTranspose2d(ngf // 2, nc, 4, 2, 1, bias=False),
                                     nn.Tanh())
 
     def forward(self, z, z_class):
@@ -68,7 +69,8 @@ class Generator(nn.Module):
         x = self.block1(x) + self.upsample(x)
         x = self.block2(x) + self.upsample(x)
         x = self.block3(x) + self.upsample(x)
-        x = self.block4(x)
+        x = self.block4(x) + self.upsample(x)
+        x = self.block5(x)
         return x
 
 class Discriminator(nn.Module):
@@ -83,7 +85,9 @@ class Discriminator(nn.Module):
                                     nn.LeakyReLU(0.2, inplace=True))
         self.block3 = nn.Sequential(nn.Conv2d(ndf * 4, ndf * 8, 4, 2, 1, bias=False),
                                     nn.LeakyReLU(0.2, inplace=True))
-        self.block4 = nn.Sequential(nn.Conv2d(ndf * 8, n_classes + 1, 4, 1, 0, bias=False))
+        self.block4 = nn.Sequential(nn.Conv2d(ndf * 8, ndf * 16, 4, 2, 1, bias=False),
+                                    nn.LeakyReLU(0.2, inplace=True))
+        self.block5 = nn.Sequential(nn.Conv2d(ndf * 16, n_classes + 1, 4, 1, 0, bias=False))
 
     def forward(self, input):
         x = self.block0(input)
@@ -91,6 +95,7 @@ class Discriminator(nn.Module):
         x = self.block2(x)
         x = self.block3(x)
         x = self.block4(x)
+        x = self.block5(x)
         x = x.view(x.size(0), -1)
         x_class = x[:, :self.n_classes]
         validity = x[:, self.n_classes:]
@@ -100,28 +105,44 @@ class Discriminator(nn.Module):
 # Loss weight for gradient penalty
 lambda_gp = 10
 
+if opt.dataroot == '':
+    # Configure data loadergeos.makedirs("./data/mnist", exist_ok=True)
+    dataloader = torch.utils.data.DataLoader(
+        datasets.MNIST(
+            "./data/mnist",
+            train=True,
+            download=True,
+            transform=transforms.Compose(
+                [transforms.Resize(opt.img_size), transforms.ToTensor(), transforms.Normalize([0.5], [0.5])]
+            ),
+        ),
+        batch_size=opt.batch_size,
+        shuffle=True,
+    )
+    nc = 1
+else:
+    dataloader = torch.utils.data.DataLoader(
+        dset.ImageFolder(root=opt.dataroot,
+                         transform=transforms.Compose([
+                             transforms.Resize(opt.img_size),
+                             transforms.ToTensor(),
+                             transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])])
+                         ),
+        batch_size=opt.batch_size,
+        num_workers=16,
+        shuffle=True,
+    )
+    nc = 3
+
 # Initialize generator and discriminator
-generator = Generator(ngf=4, nz=opt.latent_dim, nc=1, n_classes=10).to(device)
-discriminator = Discriminator(ndf=6, nc=1, n_classes=10).to(device)
+generator = Generator(ngf=26, nz=opt.latent_dim, nc=nc, n_classes=10).to(device)
+discriminator = Discriminator(ndf=16, nc=nc, n_classes=10).to(device)
 
 if 0:
     torch.save(generator.state_dict(), 'g.temp')
     torch.save(discriminator.state_dict(), 'd.temp')
     exit()
 
-# Configure data loadergeos.makedirs("./data/mnist", exist_ok=True)
-dataloader = torch.utils.data.DataLoader(
-    datasets.MNIST(
-        "./data/mnist",
-        train=True,
-        download=True,
-        transform=transforms.Compose(
-            [transforms.Resize(opt.img_size), transforms.ToTensor(), transforms.Normalize([0.5], [0.5])]
-        ),
-    ),
-    batch_size=opt.batch_size,
-    shuffle=True,
-)
 
 def sample_image(n_row, batches_done, z=None):
     """Saves a grid of generated digits ranging from 0 to n_classes"""
