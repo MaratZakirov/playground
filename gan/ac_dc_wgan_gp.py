@@ -19,14 +19,14 @@ import torch
 os.makedirs("images", exist_ok=True)
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--n_epochs", type=int, default=200, help="number of epochs of training")
-parser.add_argument("--batch_size", type=int, default=512, help="size of the batches")
+parser.add_argument("--n_epochs", type=int, default=1000, help="number of epochs of training")
+parser.add_argument("--batch_size", type=int, default=2048, help="size of the batches")
 parser.add_argument("--lr", type=float, default=0.0002, help="adam: learning rate")
 parser.add_argument("--b1", type=float, default=0.5, help="adam: decay of first order momentum of gradient")
 parser.add_argument("--b2", type=float, default=0.999, help="adam: decay of first order momentum of gradient")
 parser.add_argument("--n_cpu", type=int, default=8, help="number of cpu threads to use during batch generation")
 parser.add_argument("--latent_dim", type=int, default=100, help="dimensionality of the latent space")
-parser.add_argument("--img_size", type=int, default=32, help="size of each image dimension")
+parser.add_argument("--img_size", type=int, default=64, help="size of each image dimension")
 parser.add_argument("--channels", type=int, default=1, help="number of image channels")
 parser.add_argument("--n_critic", type=int, default=5, help="number of training steps for discriminator per iter")
 parser.add_argument("--clip_value", type=float, default=0.01, help="lower and upper clip value for disc. weights")
@@ -53,7 +53,10 @@ class Generator(nn.Module):
         self.block2 = nn.Sequential(nn.ConvTranspose2d(ngf * 4, ngf * 2, 4, 2, 1, bias=False),
                                     nn.BatchNorm2d(ngf * 2),
                                     nn.LeakyReLU(0.2, inplace=True))
-        self.block3 = nn.Sequential(nn.ConvTranspose2d(ngf * 2, nc, 4, 2, 1, bias=False),
+        self.block3 = nn.Sequential(nn.ConvTranspose2d(ngf * 2, ngf, 4, 2, 1, bias=False),
+                                    nn.BatchNorm2d(ngf),
+                                    nn.LeakyReLU(0.2, inplace=True))
+        self.block4 = nn.Sequential(nn.ConvTranspose2d(ngf, nc, 4, 2, 1, bias=False),
                                     nn.Tanh())
 
     def forward(self, z, z_class):
@@ -64,7 +67,8 @@ class Generator(nn.Module):
         x = self.block0(z)
         x = self.block1(x) + self.upsample(x)
         x = self.block2(x) + self.upsample(x)
-        x = self.block3(x)
+        x = self.block3(x) + self.upsample(x)
+        x = self.block4(x)
         return x
 
 class Discriminator(nn.Module):
@@ -79,7 +83,7 @@ class Discriminator(nn.Module):
                                     nn.LeakyReLU(0.2, inplace=True))
         self.block3 = nn.Sequential(nn.Conv2d(ndf * 4, ndf * 8, 4, 2, 1, bias=False),
                                     nn.LeakyReLU(0.2, inplace=True))
-        self.block4 = nn.Sequential(nn.Conv2d(ndf * 8, n_classes + 1, 2, 1, 0, bias=False))
+        self.block4 = nn.Sequential(nn.Conv2d(ndf * 8, n_classes + 1, 4, 1, 0, bias=False))
 
     def forward(self, input):
         x = self.block0(input)
