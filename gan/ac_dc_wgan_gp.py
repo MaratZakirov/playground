@@ -135,14 +135,13 @@ else:
     nc = 3
 
 # Initialize generator and discriminator
-generator = Generator(ngf=26, nz=opt.latent_dim, nc=nc, n_classes=10).to(device)
-discriminator = Discriminator(ndf=16, nc=nc, n_classes=10).to(device)
+generator = Generator(ngf=22, nz=opt.latent_dim, nc=nc, n_classes=10).to(device)
+discriminator = Discriminator(ndf=11, nc=nc, n_classes=10).to(device)
 
 if 0:
     torch.save(generator.state_dict(), 'g.temp')
     torch.save(discriminator.state_dict(), 'd.temp')
     exit()
-
 
 def sample_image(n_row, batches_done, z=None):
     """Saves a grid of generated digits ranging from 0 to n_classes"""
@@ -254,5 +253,7 @@ for epoch in range(opt.n_epochs):
 
             if batches_done % opt.sample_interval == 0:
                 sample_image(n_row=10, batches_done=batches_done)
+                torch.save(generator.state_dict(), "images/%d_gen.pth" % batches_done)
+                torch.save(discriminator.state_dict(), "images/%d_dis.pth" % batches_done)
 
             batches_done += opt.n_critic
