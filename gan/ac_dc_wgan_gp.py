@@ -17,8 +17,6 @@ import torch.nn.functional as F
 import torch.autograd as autograd
 import torch
 
-os.makedirs("images", exist_ok=True)
-
 parser = argparse.ArgumentParser()
 parser.add_argument("--n_epochs", type=int, default=5000, help="number of epochs of training")
 parser.add_argument("--batch_size", type=int, default=1024, help="size of the batches")
@@ -31,8 +29,11 @@ parser.add_argument("--img_size", type=int, default=128, help="size of each imag
 parser.add_argument("--n_critic", type=int, default=5, help="number of training steps for discriminator per iter")
 parser.add_argument("--sample_interval", type=int, default=400, help="interval betwen image samples")
 parser.add_argument('--dataroot', default='', required=False, help='path to dataset')
+parser.add_argument('--outdir', default='images', required=False, help='path to output')
 opt = parser.parse_args()
 print(opt)
+
+os.makedirs(opt.outdir, exist_ok=True)
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -152,7 +153,17 @@ def sample_image(n_row, batches_done, z=None):
         z = torch.randn((n_row ** 2, opt.latent_dim), device=device)
 
     gen_imgs = generator(z, z_class)
-    save_image(gen_imgs.data, "images/%d.png" % batches_done, nrow=n_row, normalize=True)
+    save_image(gen_imgs.data, os.path.join(opt.outdir, "%d.png" % batches_done), nrow=n_row, normalize=True)
+
+if 1:
+    import ganutils
+    with torch.no_grad():
+        generator.load_state_dict(torch.load('images128/100000_gen.pth'))
+        discriminator.load_state_dict(torch.load('images128/100000_dis.pth'))
+        generator.eval()
+        discriminator.eval()
+        ganutils.produceNewBirkas(generator, discriminator, device, opt.latent_dim, 100)
+    exit()
 
 # Optimizers
 optimizer_G = torch.optim.Adam(generator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
@@ -234,7 +245,6 @@ for epoch in range(opt.n_epochs):
             # -----------------
 
             # Generate a batch of images
-            fake_target = torch.randint(0, 10, size=(opt.batch_size, )).to(device)
             fake_imgs = generator(z, fake_target)
             # Loss measures generator's ability to fool the discriminator
             # Train on fake images
@@ -253,7 +263,7 @@ for epoch in range(opt.n_epochs):
 
             if batches_done % opt.sample_interval == 0:
                 sample_image(n_row=10, batches_done=batches_done)
-                torch.save(generator.state_dict(), "images/%d_gen.pth" % batches_done)
-                torch.save(discriminator.state_dict(), "images/%d_dis.pth" % batches_done)
+                torch.save(generator.state_dict(), os.path.join(opt.outdir, "%d_gen.pth" % batches_done))
+                torch.save(discriminator.state_dict(), os.path.join(opt.outdir, "%d_dis.pth" % batches_done))
 
             batches_done += opt.n_critic
