@@ -162,7 +162,7 @@ if 1:
         discriminator.load_state_dict(torch.load('images128/100000_dis.pth'))
         generator.eval()
         discriminator.eval()
-        ganutils.produceNewBirkas(generator, discriminator, device, opt.latent_dim, 100)
+        ganutils.produceNewBirkas(generator, discriminator, device, opt.latent_dim)
     exit()
 
 # Optimizers

@@ -16,13 +16,22 @@ def filterEmpty(img_files):
     img_files = new_files
     return img_files
 
+def imageSharpness(img_t):
+    nB = len(img_t)
+    grayscale = img_t.mean(dim=1).unsqueeze(1)
+    lap_kernel = torch.tensor([[0, 1.0, 0],
+                               [1, -4,  1],
+                               [0, 1.0, 0]], device=img_t.device).view(1, 1, 3, 3)
+    laplacian = F.conv2d(grayscale, lap_kernel)
+    return laplacian.view(nB, -1).std(dim=1)
+
 class dataGen(Dataset):
     def __init__(self, list_path, device, size, G=None, D=None, latent_dim=None):
         self.latent_dim = latent_dim
         self.G = G
         self.D = D
 
-        self.transform = transforms.Compose([transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])])
+        self.normimg = lambda x : (x - 0.5) / 0.5
 
         with open(list_path, "r") as file:
             self.img_files = [f.rstrip() for f in file.readlines()]
@@ -40,7 +49,7 @@ class dataGen(Dataset):
     def __len__(self):
         return len(self.img_files)
 
-    def extract(self, img_t, target, rand, size=128, gamma=0.003, keep=1.0):
+    def extract(self, img_t, target, rand, size=128, gamma=0.003):
         W, H = img_t.size(2), img_t.size(1)
         points = target['points']
 
@@ -48,7 +57,7 @@ class dataGen(Dataset):
 
         # Select just one
         I_keep = torch.where((target['class'] <= 9) * (target['class'] >= 0))[0]
-        I_keep = I_keep[torch.randperm(len(I_keep))[:int(keep * len(I_keep))]]
+        I_keep = I_keep[torch.randperm(len(I_keep))[:int(len(I_keep))]]
         nonaff_points = None#points[~I_keep]
         points = points[I_keep]
         aff_points = torch.clone(points)
@@ -87,11 +96,11 @@ class dataGen(Dataset):
 
         return img_patch, class_num, aff_points, nonaff_points
 
-    def dextract(self, img_t, fake_patch, aff_points):
+    def dextract(self, img_t, fake_patch, aff_points, gamma=0.003):
         W, H = img_t.size(2), img_t.size(1)
 
         # Perturbation
-        points = aff_points
+        points = aff_points + gamma * torch.randn(aff_points.shape).to(self.device)
 
         # Produce points
         a = points[:, 0, :].view(-1, 1, 2)
@@ -147,11 +156,11 @@ class dataGen(Dataset):
         target['order'] = data[:, 1]
         target['img_path'] = img_path
 
-        img_patch, class_num = self.extract(img_t, target, rand=True)
+        img_patch, class_num, _, _ = self.extract(img_t, target, rand=True)
 
         return img_patch, class_num
 
-    def getImg(self, index):
+    def getImg(self, index, trys=100):
         img_path = self.img_files[index % len(self.img_files)]
 
         # Extract image as PyTorch tensor
@@ -170,33 +179,59 @@ class dataGen(Dataset):
         target['img_path'] = img_path
 
         img_patch, class_num, aff_points, _ = self.extract(img_t, target, rand=True, size=self.size)
+        class_num = class_num.type(torch.LongTensor).to(self.device)
 
-        wmetric_real, _ = self.D(img_patch)
+        nB = len(img_patch)
 
-        list_fake_imgs = []
-        list_fake_metric = []
+        # TODO do I need reference values at all?
+        #metrs_ref = torch.zeros(3, nB)
+        wm_real, class_real = self.D(self.normimg(img_patch))
+        #class_fake[torch.arange(nB), class_num]
+        #sharpness_real = imageSharpness(self.normimg(img_patch))
 
-        for i in range(60):
-            z = torch.randn(len(img_patch), self.latent_dim, device=self.device)
-            fake_patch = self.G(z, class_num.type(torch.LongTensor))
-            wmetric_fake, _ = self.D(fake_patch)
+        if (torch.argmax(class_real, dim=1) != class_num).any():
+            print('All classes of real images are good')
+        else:
+            print('Note: Some classes are different of real images')
 
-            fake_patch = self.tuneImg(fake_patch, img_patch)
+        fake_imgs = torch.zeros(trys, nB, 3, self.size, self.size, device=self.device)
+        metrs = torch.zeros(3, nB, trys)
 
-            list_fake_imgs.append(fake_patch.cpu())
-            list_fake_metric.append(wmetric_fake.squeeze().cpu())
+        # Measure 3 things of a fake image
+        # 1. Wessertain metric
+        # 2. Class confidence
+        # 3. Image sharpness (not noise)
+        for i in range(trys):
+            z = torch.randn(nB, self.latent_dim, device=self.device)
 
-        list_fake_imgs = torch.stack(list_fake_imgs)
-        list_fake_metric = torch.stack(list_fake_metric)
+            fake_imgs[i] = self.G(z, class_num)
 
-        best_I = list_fake_metric.argmin(dim=0)
-        fake_patch = list_fake_imgs[best_I, torch.arange(list_fake_imgs.size(1))].to(self.device)
+            wm_fake, class_fake = self.D(fake_imgs[i])
+            class_fake = class_fake / class_fake.norm(2, dim=1).view(nB, 1)
+            class_fake = F.softmax(class_fake, dim=1)
 
-        print('Real threshold')
-        print(wmetric_real.squeeze())
-        print(list_fake_metric[best_I, torch.arange(list_fake_imgs.size(1))])
+            fake_imgs[i] = self.tuneImg(fake_imgs[i], img_patch)
 
-        img_t = self.dextract(img_t, fake_patch, aff_points)
+            metrs[0, :, i] = -wm_fake.squeeze().cpu()
+            metrs[1, :, i] = class_fake[torch.arange(nB), class_num]
+            metrs[2, :, i] = imageSharpness(fake_imgs[i]).cpu()
+
+
+        # TODO Randomly selected values
+        coef = torch.tensor([0.3, 0.3, 0.4]).view(3, 1, 1)
+
+        # Normalizing to standard distribution
+        metrs = (coef * (metrs - metrs.mean(2).unsqueeze(2)) / metrs.std(2).unsqueeze(2)).mean(0).transpose(0, 1)
+
+        # TODO argmin looks more reasonable why?!!
+        best_I = metrs.argmax(dim=0)
+        best_fakes = fake_imgs[best_I, torch.arange(nB)].to(self.device)
+
+        print('Metrics compare')
+        print(wm_real.squeeze())
+        print(metrs[best_I, torch.arange(nB)])
+
+        img_t = self.dextract(img_t, best_fakes, aff_points)
 
         return img_t, target
 
@@ -206,19 +241,19 @@ class dataGen(Dataset):
         else:
             return self.getImg(index)
 
-def produceNewBirkas(generator, discriminator, device, latent_dim, num):
+def produceNewBirkas(generator, discriminator, device, latent_dim):
     print('Generating birkas with new digits')
     train_path = '/home/marat/dataset/photo_birka/part1/train.txt'
     out_path = '/mnt/hugedisk/data/imagesGEN/'
 
     os.makedirs(out_path, exist_ok=True)
 
-    dataset = dataGen(train_path, 'cuda', size=128, G=generator, D=discriminator, latent_dim=latent_dim)
+    dataset = dataGen(train_path, device=device, size=128, G=generator, D=discriminator, latent_dim=latent_dim)
 
     for i in range(20):#len(dataset)):
-        img_t, traget = dataset[i]
+        img_t, target = dataset[i]
         img = transforms.ToPILImage()(img_t.cpu())
-        img_fname = os.path.join(out_path, 'gen_' + traget['img_path'].split('/')[-1])
+        img_fname = os.path.join(out_path, 'gen_' + target['img_path'].split('/')[-1])
         img.save(img_fname)
 
 if __name__ == "__main__":
