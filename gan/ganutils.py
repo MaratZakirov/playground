@@ -207,9 +207,6 @@ class dataGen(Dataset):
             fake_imgs[i] = self.G(z, class_num)
 
             wm_fake, class_fake = self.D(fake_imgs[i])
-            class_fake = class_fake / class_fake.norm(2, dim=1).view(nB, 1)
-            class_fake = F.softmax(class_fake, dim=1)
-
             fake_imgs[i] = self.tuneImg(fake_imgs[i], img_patch)
 
             metrs[0, :, i] = -wm_fake.squeeze().cpu()
@@ -218,7 +215,7 @@ class dataGen(Dataset):
 
 
         # TODO Randomly selected values
-        coef = torch.tensor([0.3, 0.3, 0.4]).view(3, 1, 1)
+        coef = torch.tensor([0.6, 0.2, 0.2]).view(3, 1, 1)
 
         # Normalizing to standard distribution
         metrs = (coef * (metrs - metrs.mean(2).unsqueeze(2)) / metrs.std(2).unsqueeze(2)).mean(0).transpose(0, 1)
@@ -250,9 +247,10 @@ def produceNewBirkas(generator, discriminator, device, latent_dim):
 
     dataset = dataGen(train_path, device=device, size=128, G=generator, D=discriminator, latent_dim=latent_dim)
 
-    for i in range(20):#len(dataset)):
+    for i in range(len(dataset)):
         img_t, target = dataset[i]
         img = transforms.ToPILImage()(img_t.cpu())
+        print('Generate i:', i, 'clone of', target['img_path'].split('/')[-1])
         img_fname = os.path.join(out_path, 'gen_' + target['img_path'].split('/')[-1])
         img.save(img_fname)
 
