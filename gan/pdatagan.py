@@ -14,23 +14,22 @@ from PIL import Image
 import numpy as np
 
 torch.manual_seed(50)
-tensorw = torch.rand(3, 10, 1, 1)
+colors = torch.rand(11, 3)
+colors[0, :] = 0
 
 os.makedirs("pdata", exist_ok=True)
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--n_epochs", type=int, default=5000, help="number of epochs of training")
-parser.add_argument("--batch_size", type=int, default=3, help="size of the batches")
+parser.add_argument("--batch_size", type=int, default=32, help="size of the batches")
 parser.add_argument("--lr", type=float, default=0.0002, help="adam: learning rate")
 parser.add_argument("--b1", type=float, default=0.5, help="adam: decay of first order momentum of gradient")
 parser.add_argument("--b2", type=float, default=0.999, help="adam: decay of first order momentum of gradient")
 parser.add_argument("--n_cpu", type=int, default=8, help="number of cpu threads to use during batch generation")
 parser.add_argument("--latent_dim", type=int, default=10, help="dimensionality of the latent space")
-#parser.add_argument("--img_size", type=int, default=128, help="size of each image dimension")
 parser.add_argument("--n_critic", type=int, default=5, help="number of training steps for discriminator per iter")
 parser.add_argument("--sample_interval", type=int, default=400, help="interval betwen image samples")
 parser.add_argument('--dataroot', default='', required=False, help='path to dataset')
-#parser.add_argument('--flag0', default='', required=False, help='whenever rotation affects label')
 opt = parser.parse_args()
 print(opt)
 
@@ -64,10 +63,7 @@ class pdataData(Dataset):
         return len(self.label_files)
 
     def showImgTensor(self, t):
-        t = t + 0.9
-        t = F.conv2d(t.unsqueeze(0), tensorw).squeeze()
-        transforms.ToPILImage()(t).resize((512, 512)).show()
-        exit()
+        transforms.ToPILImage()(colors[t.argmax(0)].permute(2, 0, 1)).resize((512, 512)).show()
 
     def __getitem__(self, item):
         data = torch.tensor(np.loadtxt(self.label_files[item]).astype(np.float32))
@@ -87,13 +83,16 @@ class pdataData(Dataset):
         ij = torch.mm(ij, rot_mat)
 
         ij = ij.type(torch.LongTensor)
-        r = -0.9 * torch.ones(self.nclass, self.size, self.size)
-        r[cl, ij[:, 1], ij[:, 0]] = 0.9
+        r = torch.zeros(self.nclass + 1, self.size, self.size)
+        r[0, :, :] = 1.0
+        r[0, ij[:, 1], ij[:, 0]] = 0.0
+        r[cl + 1, ij[:, 1], ij[:, 0]] = 1.0
 
         if 0:
             Image.open(self.label_files[item].replace('labels8', 'images')
                        .replace('.txt', '.jpg')).resize((512, 512)).show()
             self.showImgTensor(r)
+            exit()
 
         return r
 
@@ -112,8 +111,8 @@ class Generator(nn.Module):
         self.block2 = nn.Sequential(nn.ConvTranspose2d(ngf * 2, ngf, 4, 2, 1, bias=False),
                                     nn.BatchNorm2d(ngf),
                                     nn.LeakyReLU(0.2, inplace=True))
-        self.block3 = nn.Sequential(nn.ConvTranspose2d(ngf, n_classes, 4, 2, 1, bias=False),
-                                    nn.Tanh())
+        self.block3 = nn.Sequential(nn.ConvTranspose2d(ngf, n_classes + 1, 4, 2, 1, bias=False),
+                                    nn.Softmax2d())
 
     def forward(self, z):
         # Setting up appropriate prefix
@@ -128,7 +127,7 @@ class Discriminator(nn.Module):
     def __init__(self, ndf, n_classes):
         super(Discriminator, self).__init__()
         self.n_classes = n_classes
-        self.block0 = nn.Sequential(nn.Conv2d(n_classes, ndf, 4, 2, 1, bias=False),
+        self.block0 = nn.Sequential(nn.Conv2d(n_classes + 1, ndf, 4, 2, 1, bias=False),
                                     nn.LeakyReLU(0.2, inplace=True))
         self.block1 = nn.Sequential(nn.Conv2d(ndf, ndf * 2, 4, 2, 1, bias=False),
                                     nn.LeakyReLU(0.2, inplace=True))
@@ -171,8 +170,8 @@ def sample_image(n_row, batches_done, z=None):
         z = torch.randn((n_row ** 2, opt.latent_dim), device=device)
 
     gen_imgs = generator(z)
-    gen_imgs = gen_imgs + 0.9
-    gen_imgs = F.conv2d(gen_imgs, tensorw.to(z.device))
+    gen_imgs = colors[gen_imgs.argmax(1)].permute(0, 3, 1, 2)
+    gen_imgs = F.interpolate(gen_imgs, scale_factor=4)
     save_image(gen_imgs.data, "pdata/%d.png" % batches_done, nrow=n_row, normalize=True)
 
 # Optimizers
@@ -200,7 +199,6 @@ def compute_gradient_penalty(D, real_samples, fake_samples):
     gradients = gradients.view(gradients.size(0), -1)
     gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
     return gradient_penalty
-
 
 class_aux_loss = torch.nn.CrossEntropyLoss()
 # ----------
@@ -256,13 +254,16 @@ for epoch in range(opt.n_epochs):
             g_loss.backward()
             optimizer_G.step()
 
-
             print(
                 "[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f]"
                 % (epoch, opt.n_epochs, i, len(dataloader), d_loss.item(), g_loss.item())
             )
 
             if batches_done % opt.sample_interval == 0:
+                if not os.path.isfile("pdata/true.png"):
+                    real_imgs = colors[real_imgs.argmax(1)].permute(0, 3, 1, 2)
+                    real_imgs = F.interpolate(real_imgs, scale_factor=4)
+                    save_image(real_imgs.data, "pdata/true.png", nrow=5, normalize=True)
                 sample_image(n_row=5, batches_done=batches_done)
                 torch.save(generator.state_dict(), "pdata/%d_gen.pth" % batches_done)
                 torch.save(discriminator.state_dict(), "pdata/%d_dis.pth" % batches_done)
