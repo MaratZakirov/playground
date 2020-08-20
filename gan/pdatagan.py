@@ -20,15 +20,15 @@ colors[0, :] = 0
 os.makedirs("pdata", exist_ok=True)
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--n_epochs", type=int, default=5000, help="number of epochs of training")
-parser.add_argument("--batch_size", type=int, default=32, help="size of the batches")
+parser.add_argument("--n_epochs", type=int, default=30000, help="number of epochs of training")
+parser.add_argument("--batch_size", type=int, default=1024, help="size of the batches")
 parser.add_argument("--lr", type=float, default=0.0002, help="adam: learning rate")
 parser.add_argument("--b1", type=float, default=0.5, help="adam: decay of first order momentum of gradient")
 parser.add_argument("--b2", type=float, default=0.999, help="adam: decay of first order momentum of gradient")
 parser.add_argument("--n_cpu", type=int, default=8, help="number of cpu threads to use during batch generation")
 parser.add_argument("--latent_dim", type=int, default=10, help="dimensionality of the latent space")
 parser.add_argument("--n_critic", type=int, default=5, help="number of training steps for discriminator per iter")
-parser.add_argument("--sample_interval", type=int, default=400, help="interval betwen image samples")
+parser.add_argument("--sample_interval", type=int, default=1000, help="interval betwen image samples")
 parser.add_argument('--dataroot', default='', required=False, help='path to dataset')
 opt = parser.parse_args()
 print(opt)
@@ -63,7 +63,7 @@ class pdataData(Dataset):
         return len(self.label_files)
 
     def showImgTensor(self, t):
-        transforms.ToPILImage()(colors[t.argmax(0)].permute(2, 0, 1)).resize((512, 512)).show()
+        transforms.ToPILImage()(colors[t.argmax(0)].permute(2, 0, 1)).resize((128, 128)).show()
 
     def __getitem__(self, item):
         data = torch.tensor(np.loadtxt(self.label_files[item]).astype(np.float32))
@@ -156,8 +156,8 @@ dataloader = torch.utils.data.DataLoader(
     shuffle=True)
 
 # Initialize generator and discriminator
-generator = Generator(ngf=10, nz=opt.latent_dim, n_classes=10).to(device)
-discriminator = Discriminator(ndf=6,  n_classes=10).to(device)
+generator = Generator(ngf=16, nz=opt.latent_dim, n_classes=10).to(device)
+discriminator = Discriminator(ndf=12,  n_classes=10).to(device)
 
 if 0:
     torch.save(generator.state_dict(), 'g.temp')
@@ -261,10 +261,11 @@ for epoch in range(opt.n_epochs):
 
             if batches_done % opt.sample_interval == 0:
                 if not os.path.isfile("pdata/true.png"):
+                    real_imgs = real_imgs[:49]
                     real_imgs = colors[real_imgs.argmax(1)].permute(0, 3, 1, 2)
                     real_imgs = F.interpolate(real_imgs, scale_factor=4)
-                    save_image(real_imgs.data, "pdata/true.png", nrow=5, normalize=True)
-                sample_image(n_row=5, batches_done=batches_done)
+                    save_image(real_imgs.data, "pdata/true.png", nrow=7, normalize=True)
+                sample_image(n_row=7, batches_done=batches_done)
                 torch.save(generator.state_dict(), "pdata/%d_gen.pth" % batches_done)
                 torch.save(discriminator.state_dict(), "pdata/%d_dis.pth" % batches_done)
 
