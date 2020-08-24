@@ -11,6 +11,11 @@ import torchvision.datasets as dset
 import torch.nn as nn
 import torch.autograd as autograd
 import torch
+import numpy as np
+
+torch.manual_seed(50)
+colors = torch.rand(11, 3)
+colors[0, :] = 0
 
 from PIL import Image
 
@@ -18,7 +23,7 @@ os.makedirs("birka", exist_ok=True)
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--n_epochs", type=int, default=5000, help="number of epochs of training")
-parser.add_argument("--batch_size", type=int, default=64, help="size of the batches")
+parser.add_argument("--batch_size", type=int, default=4, help="size of the batches")
 parser.add_argument("--lr", type=float, default=0.0002, help="adam: learning rate")
 parser.add_argument("--b1", type=float, default=0.5, help="adam: decay of first order momentum of gradient")
 parser.add_argument("--b2", type=float, default=0.999, help="adam: decay of first order momentum of gradient")
@@ -28,47 +33,117 @@ parser.add_argument("--img_size", type=int, default=128, help="size of each imag
 parser.add_argument("--n_critic", type=int, default=5, help="number of training steps for discriminator per iter")
 parser.add_argument("--sample_interval", type=int, default=400, help="interval betwen image samples")
 parser.add_argument('--dataroot', default='', required=False, help='path to dataset')
-parser.add_argument('--flag0', default='', required=False, help='whenever rotation affects label')
+parser.add_argument('--layout', default=None, required=True, help='whenever rotation affects label')
+parser.add_argument('--genpth', default=None, required=False, help='whenever rotation affects label')
+parser.add_argument('--dispth', default=None, required=False, help='whenever rotation affects label')
 opt = parser.parse_args()
 print(opt)
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
+def filterEmpty(img_files):
+    new_files = []
+    for fi in img_files:
+        fl = fi.rstrip().replace('.jpg', '.txt').replace('images', 'labels')
+        if len(open(fl).readlines()) > 0:
+            new_files.append(fi)
+    img_files = new_files
+    return img_files
+
+def showImgTensor(t):
+    transforms.ToPILImage()(colors[t.argmax(0)].permute(2, 0, 1)).resize((128, 128)).show()
+
 class itemDataset(torch.utils.data.Dataset):
-    def __init__(self, root, flag0, size=512):
-        self.size = size
-        self.flag0 = flag0
+    def __init__(self, root, n_classes, size=512):
+        self.n_classes = n_classes
+        self.img_size = size
+        self.size = size // 16
         self.img_files = open(root).readlines()
         self.transform = transforms.Compose([
-                             transforms.RandomCrop(size),
                              transforms.ToTensor(),
                              transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])])
 
+        with open(root, "r") as file:
+            self.img_files = [f.rstrip() for f in file.readlines()]
+            # TODO get rid off all empty labels
+            self.img_files = filterEmpty(self.img_files)
+
+        self.label_files = [
+            path.replace("images", "labels8").replace(".png", ".txt").replace(".jpg", ".txt")
+            for path in self.img_files
+        ]
+
     def __getitem__(self, item):
-        img_file = self.img_files[item].rstrip()
-        img = Image.open(img_file)
+        data = torch.tensor(np.loadtxt(self.label_files[item]).astype(np.float32))
+        nB = len(data)
 
-        w, h = img.width, img.height
+        ij = (self.size * data[:, 3:].view(nB, 4, 2).mean(dim=1))
+        cl = data[:, 2].type(torch.LongTensor)
 
-        if min(w, h) < self.size or min(w, h) > self.size * 1.4:
-            coef = torch.clamp(torch.tensor(min(w, h)), self.size, self.size * 1.4) * (1.0 /  min(w, h))
-            img = img.resize((int(w * coef), int(h * coef)))
+        # Filter out
+        ij = ij[cl <= 9]
+        cl = cl[cl <= 9]
 
-        rot = torch.randint(1, 5, (1, ))[0]
-        img = img.rotate((rot - 1) * 90)
-        return self.transform(img), torch.tensor(0) if self.flag0 in img_file else rot
+        # Random rotation
+        radian =  (3.14 / 2) * torch.randint(-2, 3, (1, ))
+        rot_mat = torch.tensor([[torch.cos(radian), -torch.sin(radian)],
+                                [torch.sin(radian), torch.cos(radian)]])
+        ij = torch.mm(ij, rot_mat)
 
+        ij = ij.type(torch.LongTensor)
+        tlayout = torch.zeros(self.n_classes + 1, self.size, self.size)
+        tlayout[0, :, :] = 1.0
+        tlayout[0, ij[:, 1], ij[:, 0]] = 0.0
+        tlayout[cl + 1, ij[:, 1], ij[:, 0]] = 1.0
 
+        # Loading image
+        img = Image.open(self.label_files[item].
+                         replace('labels8', 'images').
+                         replace('.txt', '.jpg')).resize((self.img_size, self.img_size))
+        img = img.rotate(90 * radian / (3.14 / 2))
+
+        if 0:
+            img.show()
+            showImgTensor(tlayout)
+            exit()
+
+        return self.transform(img), tlayout
 
     def __len__(self):
         return len(self.img_files)
 
-
-class Generator(nn.Module):
-    def __init__(self, ngf, nz, nc, n_classes):
-        super(Generator, self).__init__()
+class GeneratorLayout(nn.Module):
+    def __init__(self, ngf, nz, n_classes):
+        super(GeneratorLayout, self).__init__()
 
         self.n_classes = n_classes
+        self.upsample = lambda x : nn.Upsample(scale_factor=2)(x[:, :x.size(1) // 2])
+        self.block0 = nn.Sequential(nn.ConvTranspose2d(nz, ngf * 4, 4, 1, 0, bias=False),
+                                    nn.BatchNorm2d(ngf * 4),
+                                    nn.LeakyReLU(0.2, inplace=True))
+        self.block1 = nn.Sequential(nn.ConvTranspose2d(ngf * 4, ngf * 2, 4, 2, 1, bias=False),
+                                    nn.BatchNorm2d(ngf * 2),
+                                    nn.LeakyReLU(0.2, inplace=True))
+        self.block2 = nn.Sequential(nn.ConvTranspose2d(ngf * 2, ngf, 4, 2, 1, bias=False),
+                                    nn.BatchNorm2d(ngf),
+                                    nn.LeakyReLU(0.2, inplace=True))
+        self.block3 = nn.Sequential(nn.ConvTranspose2d(ngf, n_classes + 1, 4, 2, 1, bias=False),
+                                    nn.Softmax2d())
+
+    def forward(self, z):
+        # Setting up appropriate prefix
+        z = z.view(z.size(0), z.size(1), 1, 1)
+        x = self.block0(z)
+        x = self.block1(x) + self.upsample(x)
+        x = self.block2(x) + self.upsample(x)
+        x = self.block3(x)
+        return x
+
+class Generator(nn.Module):
+    def __init__(self, ngf, nz, nc, n_layout):
+        super(Generator, self).__init__()
+
+        self.n_layout = n_layout
         self.upsample = lambda x : nn.Upsample(scale_factor=2)(x[:, :x.size(1) // 2])
         self.block0 = nn.Sequential(nn.ConvTranspose2d(nz, ngf * 64, 4, 1, 0, bias=False),
                                     nn.BatchNorm2d(ngf * 64),
@@ -94,10 +169,10 @@ class Generator(nn.Module):
         self.block7 = nn.Sequential(nn.ConvTranspose2d(ngf, nc, 4, 2, 1, bias=False),
                                     nn.Tanh())
 
-    def forward(self, z, z_class):
+    def forward(self, z, z_layout):
         # Setting up appropriate prefix
-        z[:, :self.n_classes] = 0
-        z[torch.arange(len(z_class)).to(device), z_class] = 1.0
+
+        z[:, :self.n_layout] = z_layout
         z = z.view(z.size(0), z.size(1), 1, 1)
         x = self.block0(z)
         x = self.block1(x) + self.upsample(x)
@@ -127,67 +202,49 @@ class Discriminator(nn.Module):
                                     nn.LeakyReLU(0.2, inplace=True))
         self.block6 = nn.Sequential(nn.Conv2d(ndf * 32, ndf * 64, 4, 2, 1, bias=False),
                                     nn.LeakyReLU(0.2, inplace=True))
-        self.block7 = nn.Sequential(nn.Conv2d(ndf * 64, n_classes + 1, 4, 1, 0, bias=False))
+        self.block7 = nn.Sequential(nn.Conv2d(ndf * 64, 1, 4, 1, 0, bias=False))
 
     def forward(self, input):
         x = self.block0(input)
         x = self.block1(x)
         x = self.block2(x)
         x = self.block3(x)
+        x_det = nn.Softmax2d()(x[:, :self.n_classes + 1])
         x = self.block4(x)
         x = self.block5(x)
         x = self.block6(x)
         x = self.block7(x)
         x = x.view(x.size(0), -1)
-        x_class = x[:, :self.n_classes]
-        validity = x[:, self.n_classes:]
-        return validity, x_class
-
+        return x, x_det
 
 # Loss weight for gradient penalty
 lambda_gp = 10
 
-if opt.dataroot == '':
-    # Configure data loadergeos.makedirs("./data/mnist", exist_ok=True)
-    dataloader = torch.utils.data.DataLoader(
-        datasets.MNIST(
-            "./data/mnist",
-            train=True,
-            download=True,
-            transform=transforms.Compose(
-                [transforms.Resize(opt.img_size), transforms.ToTensor(), transforms.Normalize([0.5], [0.5])]
-            ),
-        ),
-        batch_size=opt.batch_size,
-        shuffle=True,
-    )
-    nc = 1
-else:
-    dataloader = torch.utils.data.DataLoader(
-        itemDataset(opt.dataroot, opt.flag0, 512),
-        batch_size=opt.batch_size,
-        num_workers=0,
-        shuffle=True)
-    nc = 3
+dataloader = torch.utils.data.DataLoader(
+    itemDataset(opt.dataroot, 10, 512),
+    batch_size=opt.batch_size,
+    num_workers=0,
+    shuffle=True)
+nc = 3
+
+genLay = GeneratorLayout(ngf=32, nz=10, n_classes=10).eval().to(device)
+genLay.load_state_dict(torch.load(opt.layout))
 
 # Initialize generator and discriminator
-generator = Generator(ngf=8, nz=opt.latent_dim, nc=nc, n_classes=5).to(device)
-discriminator = Discriminator(ndf=8, nc=nc, n_classes=5).to(device)
+generator = Generator(ngf=8, nz=opt.latent_dim, nc=nc, n_layout=10).to(device)
+discriminator = Discriminator(ndf=8, nc=nc, n_classes=10).to(device)
 
-if 0:
-    torch.save(generator.state_dict(), 'g.temp')
-    torch.save(discriminator.state_dict(), 'd.temp')
-    exit()
+if opt.genpth != None and opt.dispth != None:
+    generator.load_state_dict(torch.load(opt.genpth))
+    discriminator.load_state_dict(torch.load(opt.dispth))
 
-def sample_image(n_row, batches_done, z=None):
+def sample_image(n_row, batches_done):
     """Saves a grid of generated digits ranging from 0 to n_classes"""
     # Sample noise
-    z_class = torch.arange(n_row).repeat(n_row).to(device)
+    z_layout = torch.randn((n_row ** 2, 10))
+    z = torch.randn((n_row ** 2, opt.latent_dim), device=device)
 
-    if z == None:
-        z = torch.randn((n_row ** 2, opt.latent_dim), device=device)
-
-    gen_imgs = generator(z, z_class)
+    gen_imgs = generator(z, z_layout)
     save_image(gen_imgs.data, "birka/%d.png" % batches_done, nrow=n_row, normalize=True)
 
 # Optimizers
@@ -216,18 +273,25 @@ def compute_gradient_penalty(D, real_samples, fake_samples):
     gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
     return gradient_penalty
 
+def class_aux_loss(input, target):
+    assert input.shape == target.shape
+    nB, nC, nH, nW = input.shape
 
-class_aux_loss = torch.nn.CrossEntropyLoss()
+    target = target.permute(0, 2, 3, 1).argmax(3).view(nB * nH * nW)
+    input = input.permute(0, 2, 3, 1).reshape(nB * nH * nW, nC)
+
+    return 1000 * torch.nn.NLLLoss()(torch.log(input), target)
+
 # ----------
 #  Training
 # ----------
 
 batches_done = 0
 for epoch in range(opt.n_epochs):
-    for i, (imgs, target) in enumerate(dataloader):
+    for i, (imgs, tlayout) in enumerate(dataloader):
         # Configure input
         real_imgs = imgs.to(device)
-        real_target = target.to(device)
+        tlayout = tlayout.to(device)
 
         # ---------------------
         #  Train Discriminator
@@ -236,25 +300,28 @@ for epoch in range(opt.n_epochs):
         optimizer_D.zero_grad()
 
         # Sample noise as generator input
-        z = torch.randn(imgs.shape[0], opt.latent_dim, 1, 1).to(device)
+        z = torch.randn(imgs.shape[0], opt.latent_dim).to(device)
+
+        # generating target layout for fake images
+        z_layout = torch.randn(imgs.shape[0], 10).to(device)
+        tfakelayout = genLay(z_layout)
 
         # Generate a batch of images
-        fake_target = torch.randint(0, 10, size=(imgs.shape[0], )).to(device)
-        fake_imgs = generator(z, fake_target)
+        fake_imgs = generator(z, z_layout)
 
         # Real images
-        real_validity, real_class = discriminator(real_imgs)
+        real_validity, real_layout = discriminator(real_imgs)
         # Fake images
-        fake_validity, fake_class = discriminator(fake_imgs)
+        fake_validity, fake_layout = discriminator(fake_imgs)
         # Gradient penalty
         gradient_penalty = compute_gradient_penalty(discriminator, real_imgs.data, fake_imgs.data)
         # Real Cross Entropy
-        real_class_err = class_aux_loss(real_class, real_target)
+        real_lay_err = class_aux_loss(real_layout, tlayout)
         # Fake Cross Entropy
-        fake_class_err = class_aux_loss(fake_class, fake_target)
+        fake_lay_err = class_aux_loss(fake_layout, tfakelayout)
         # Adversarial loss
-        d_loss = -torch.mean(real_validity) + torch.mean(fake_validity) + lambda_gp * gradient_penalty\
-                 + real_class_err + fake_class_err
+        d_loss = -torch.mean(real_validity) + torch.mean(fake_validity) + lambda_gp * gradient_penalty \
+                 + real_lay_err + fake_lay_err
 
         d_loss.backward()
         optimizer_D.step()
@@ -269,20 +336,21 @@ for epoch in range(opt.n_epochs):
             # -----------------
 
             # Generate a batch of images
-            fake_imgs = generator(z, fake_target)
+            fake_imgs = generator(z, z_layout)
             # Loss measures generator's ability to fool the discriminator
             # Train on fake images
-            fake_validity, fake_class = discriminator(fake_imgs)
+            fake_validity, fake_layout = discriminator(fake_imgs)
             # Fake Cross Entropy
-            fake_class_err = class_aux_loss(fake_class, fake_target)
-            g_loss = -torch.mean(fake_validity) + fake_class_err
+            fake_lay_err = class_aux_loss(fake_layout, tfakelayout)
+            g_loss = -torch.mean(fake_validity) + fake_lay_err
 
             g_loss.backward()
             optimizer_G.step()
 
             print(
-                "[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f]"
-                % (epoch, opt.n_epochs, i, len(dataloader), d_loss.item(), g_loss.item())
+                "[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f] [R_det: %f] [F_det: %f]"
+                % (epoch, opt.n_epochs, i, len(dataloader), d_loss.item(), g_loss.item(),
+                   real_lay_err.item(), fake_lay_err.item())
             )
 
             if batches_done % opt.sample_interval == 0:
