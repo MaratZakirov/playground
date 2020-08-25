@@ -23,7 +23,7 @@ os.makedirs("birka", exist_ok=True)
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--n_epochs", type=int, default=5000, help="number of epochs of training")
-parser.add_argument("--batch_size", type=int, default=4, help="size of the batches")
+parser.add_argument("--batch_size", type=int, default=32, help="size of the batches")
 parser.add_argument("--lr", type=float, default=0.0002, help="adam: learning rate")
 parser.add_argument("--b1", type=float, default=0.5, help="adam: decay of first order momentum of gradient")
 parser.add_argument("--b2", type=float, default=0.999, help="adam: decay of first order momentum of gradient")
@@ -33,9 +33,9 @@ parser.add_argument("--img_size", type=int, default=128, help="size of each imag
 parser.add_argument("--n_critic", type=int, default=5, help="number of training steps for discriminator per iter")
 parser.add_argument("--sample_interval", type=int, default=400, help="interval betwen image samples")
 parser.add_argument('--dataroot', default='', required=False, help='path to dataset')
-parser.add_argument('--layout', default=None, required=True, help='whenever rotation affects label')
-parser.add_argument('--genpth', default=None, required=False, help='whenever rotation affects label')
-parser.add_argument('--dispth', default=None, required=False, help='whenever rotation affects label')
+parser.add_argument('--layout', required=True, help='whenever rotation affects label')
+parser.add_argument('--genpth', required=False, help='whenever rotation affects label')
+parser.add_argument('--dispth', required=False, help='whenever rotation affects label')
 opt = parser.parse_args()
 print(opt)
 
@@ -185,37 +185,46 @@ class Generator(nn.Module):
         return x
 
 class Discriminator(nn.Module):
-    def __init__(self, ndf, nc, n_classes):
+    def __init__(self, ndf, nc, n_classes, bn=True):
         super(Discriminator, self).__init__()
         self.n_classes = n_classes
-        self.block0 = nn.Sequential(nn.Conv2d(nc, ndf, 4, 2, 1, bias=False),
-                                    nn.LeakyReLU(0.2, inplace=True))
-        self.block1 = nn.Sequential(nn.Conv2d(ndf, ndf * 2, 4, 2, 1, bias=False),
-                                    nn.LeakyReLU(0.2, inplace=True))
-        self.block2 = nn.Sequential(nn.Conv2d(ndf * 2, ndf * 4, 4, 2, 1, bias=False),
-                                    nn.LeakyReLU(0.2, inplace=True))
-        self.block3 = nn.Sequential(nn.Conv2d(ndf * 4, ndf * 8, 4, 2, 1, bias=False),
-                                    nn.LeakyReLU(0.2, inplace=True))
-        self.block4 = nn.Sequential(nn.Conv2d(ndf * 8, ndf * 16, 4, 2, 1, bias=False),
-                                    nn.LeakyReLU(0.2, inplace=True))
-        self.block5 = nn.Sequential(nn.Conv2d(ndf * 16, ndf * 32, 4, 2, 1, bias=False),
-                                    nn.LeakyReLU(0.2, inplace=True))
-        self.block6 = nn.Sequential(nn.Conv2d(ndf * 32, ndf * 64, 4, 2, 1, bias=False),
-                                    nn.LeakyReLU(0.2, inplace=True))
-        self.block7 = nn.Sequential(nn.Conv2d(ndf * 64, 1, 4, 1, 0, bias=False))
+
+        # Main backbone
+        self.block0 = self._basic_block(nc, ndf // 2, ndf)
+        self.block1 = self._basic_block(ndf, ndf, ndf * 2)
+        self.block2 = self._basic_block(ndf * 2, ndf * 2, ndf * 4)
+        self.block3 = self._basic_block(ndf * 4, ndf * 4, ndf * 8)
+
+        # Detection head
+        self.det_head = nn.Sequential(nn.Conv2d(ndf * 8, self.n_classes + 1, 1),
+                                      nn.LogSoftmax(dim=1))
+        # Validation head
+        self.val_head = nn.Sequential(nn.Conv2d(ndf * 8, ndf * 4, 4, 2, 1, bias=False),
+                                      nn.LeakyReLU(0.2, inplace=True),
+                                      nn.Conv2d(ndf * 4, ndf * 2, 4, 2, 1, bias=False),
+                                      nn.LeakyReLU(0.2, inplace=True),
+                                      nn.Conv2d(ndf * 2, ndf, 4, 2, 1, bias=False),
+                                      nn.LeakyReLU(0.2, inplace=True),
+                                      nn.Conv2d(ndf, 1, 4, 1, 0, bias=False))
+
+    def _basic_block(self, inch, hich, outch, bn=True):
+        return nn.Sequential(
+            nn.Conv2d(inch, hich, 3, 1, 1, bias=False),
+            nn.BatchNorm2d(hich) if bn else nn.Identity(),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(hich, outch, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(outch) if bn else nn.Identity(),
+            nn.LeakyReLU(0.2, inplace=True))
 
     def forward(self, input):
         x = self.block0(input)
         x = self.block1(x)
         x = self.block2(x)
         x = self.block3(x)
-        x_det = nn.Softmax2d()(x[:, :self.n_classes + 1])
-        x = self.block4(x)
-        x = self.block5(x)
-        x = self.block6(x)
-        x = self.block7(x)
-        x = x.view(x.size(0), -1)
-        return x, x_det
+        x_det = self.det_head(x)
+        x_val = self.val_head(x)
+        x_val = x_val.view(x_val.size(0), -1)
+        return x_val, x_det
 
 # Loss weight for gradient penalty
 lambda_gp = 10
@@ -232,7 +241,12 @@ genLay.load_state_dict(torch.load(opt.layout))
 
 # Initialize generator and discriminator
 generator = Generator(ngf=8, nz=opt.latent_dim, nc=nc, n_layout=10).to(device)
-discriminator = Discriminator(ndf=8, nc=nc, n_classes=10).to(device)
+discriminator = Discriminator(ndf=16, nc=nc, n_classes=10).to(device)
+
+#torch.save(discriminator.state_dict(), 'AAA_discr.whole')
+#torch.save(discriminator.val_head.state_dict(), 'AAA_val.head')
+#torch.save(generator.state_dict(), 'AAA_gene.whole')
+#exit()
 
 if opt.genpth != None and opt.dispth != None:
     generator.load_state_dict(torch.load(opt.genpth))
@@ -280,7 +294,7 @@ def class_aux_loss(input, target):
     target = target.permute(0, 2, 3, 1).argmax(3).view(nB * nH * nW)
     input = input.permute(0, 2, 3, 1).reshape(nB * nH * nW, nC)
 
-    return 1000 * torch.nn.NLLLoss()(torch.log(input), target)
+    return 1000 * torch.nn.NLLLoss()(input, target)
 
 # ----------
 #  Training
