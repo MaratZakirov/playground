@@ -185,7 +185,7 @@ class Generator(nn.Module):
         return x
 
 class Discriminator(nn.Module):
-    def __init__(self, ndf, nc, n_classes, bn=True):
+    def __init__(self, ndf, nc, n_classes):
         super(Discriminator, self).__init__()
         self.n_classes = n_classes
 
@@ -198,6 +198,7 @@ class Discriminator(nn.Module):
         # Detection head
         self.det_head = nn.Sequential(nn.Conv2d(ndf * 8, self.n_classes + 1, 1),
                                       nn.LogSoftmax(dim=1))
+
         # Validation head
         self.val_head = nn.Sequential(nn.Conv2d(ndf * 8, ndf * 4, 4, 2, 1, bias=False),
                                       nn.LeakyReLU(0.2, inplace=True),
@@ -207,13 +208,11 @@ class Discriminator(nn.Module):
                                       nn.LeakyReLU(0.2, inplace=True),
                                       nn.Conv2d(ndf, 1, 4, 1, 0, bias=False))
 
-    def _basic_block(self, inch, hich, outch, bn=True):
+    def _basic_block(self, inch, hich, outch):
         return nn.Sequential(
             nn.Conv2d(inch, hich, 3, 1, 1, bias=False),
-            nn.BatchNorm2d(hich) if bn else nn.Identity(),
             nn.LeakyReLU(0.2, inplace=True),
             nn.Conv2d(hich, outch, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(outch) if bn else nn.Identity(),
             nn.LeakyReLU(0.2, inplace=True))
 
     def forward(self, input):
@@ -232,7 +231,7 @@ lambda_gp = 10
 dataloader = torch.utils.data.DataLoader(
     itemDataset(opt.dataroot, 10, 512),
     batch_size=opt.batch_size,
-    num_workers=0,
+    num_workers=4,
     shuffle=True)
 nc = 3
 
@@ -241,7 +240,7 @@ genLay.load_state_dict(torch.load(opt.layout))
 
 # Initialize generator and discriminator
 generator = Generator(ngf=8, nz=opt.latent_dim, nc=nc, n_layout=10).to(device)
-discriminator = Discriminator(ndf=16, nc=nc, n_classes=10).to(device)
+discriminator = Discriminator(ndf=20, nc=nc, n_classes=10).to(device)
 
 #torch.save(discriminator.state_dict(), 'AAA_discr.whole')
 #torch.save(discriminator.val_head.state_dict(), 'AAA_val.head')
