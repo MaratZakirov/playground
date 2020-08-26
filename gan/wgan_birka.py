@@ -211,8 +211,10 @@ class Discriminator(nn.Module):
     def _basic_block(self, inch, hich, outch):
         return nn.Sequential(
             nn.Conv2d(inch, hich, 3, 1, 1, bias=False),
+            nn.Identity(),
             nn.LeakyReLU(0.2, inplace=True),
             nn.Conv2d(hich, outch, 4, 2, 1, bias=False),
+            nn.Identity(),
             nn.LeakyReLU(0.2, inplace=True))
 
     def forward(self, input):
@@ -286,6 +288,7 @@ def compute_gradient_penalty(D, real_samples, fake_samples):
     gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
     return gradient_penalty
 
+loss_func = torch.nn.NLLLoss(weight=torch.tensor([.3] + [1] * 10, device=device))
 def class_aux_loss(input, target):
     assert input.shape == target.shape
     nB, nC, nH, nW = input.shape
@@ -293,7 +296,7 @@ def class_aux_loss(input, target):
     target = target.permute(0, 2, 3, 1).argmax(3).view(nB * nH * nW)
     input = input.permute(0, 2, 3, 1).reshape(nB * nH * nW, nC)
 
-    return 1000 * torch.nn.NLLLoss()(input, target)
+    return 1000 * loss_func(input, target)
 
 # ----------
 #  Training
@@ -305,6 +308,8 @@ for epoch in range(opt.n_epochs):
         # Configure input
         real_imgs = imgs.to(device)
         tlayout = tlayout.to(device)
+
+        stat_target_obj = (tlayout.argmax(dim=1) != 0).sum()
 
         # ---------------------
         #  Train Discriminator
@@ -336,6 +341,12 @@ for epoch in range(opt.n_epochs):
         d_loss = -torch.mean(real_validity) + torch.mean(fake_validity) + lambda_gp * gradient_penalty \
                  + real_lay_err + fake_lay_err
 
+        # Collecting some statistics
+        stat_real_val = torch.mean(real_validity).item()
+        stat_fake_val1 = torch.mean(fake_validity).item()
+        stat_real_obj = (real_layout.argmax(dim=1) != 0).sum()
+        stat_fake1_obj = (fake_layout.argmax(dim=1) != 0).sum()
+
         d_loss.backward()
         optimizer_D.step()
 
@@ -360,10 +371,15 @@ for epoch in range(opt.n_epochs):
             g_loss.backward()
             optimizer_G.step()
 
+            stat_fake_val2 = torch.mean(fake_validity).item()
+            stat_fake2_obj = (fake_layout.argmax(dim=1) != 0).sum()
+
             print(
-                "[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f] [R_det: %f] [F_det: %f]"
+                "[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f] [R_det: %f] [F_det: %f] "
+                "[R_val: %f] [F1_val: %f] [F2_val: %f] [To: %d] [Ro: %d] [F1o: %d] [F2o: %d]"
                 % (epoch, opt.n_epochs, i, len(dataloader), d_loss.item(), g_loss.item(),
-                   real_lay_err.item(), fake_lay_err.item())
+                   real_lay_err.item(), fake_lay_err.item(), stat_real_val, stat_fake_val1, stat_fake_val2,
+                   stat_target_obj, stat_real_obj, stat_fake1_obj, stat_fake2_obj)
             )
 
             if batches_done % opt.sample_interval == 0:
