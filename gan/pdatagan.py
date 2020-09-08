@@ -10,18 +10,18 @@ import torch.nn as nn
 import torch.autograd as autograd
 import torch
 
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 
-torch.manual_seed(50)
+torch.manual_seed(506)
 colors = torch.rand(11, 3)
 colors[0, :] = 0
 
 os.makedirs("pdata", exist_ok=True)
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--n_epochs", type=int, default=30000, help="number of epochs of training")
-parser.add_argument("--batch_size", type=int, default=1024, help="size of the batches")
+parser.add_argument("--n_epochs", type=int, default=60000, help="number of epochs of training")
+parser.add_argument("--batch_size", type=int, default=512, help="size of the batches")
 parser.add_argument("--lr", type=float, default=0.0002, help="adam: learning rate")
 parser.add_argument("--b1", type=float, default=0.5, help="adam: decay of first order momentum of gradient")
 parser.add_argument("--b2", type=float, default=0.999, help="adam: decay of first order momentum of gradient")
@@ -44,6 +44,18 @@ def filterEmpty(img_files):
     img_files = new_files
     return img_files
 
+def showImgTensor(t, size=128):
+    pil_img = transforms.ToPILImage()(colors[t.argmax(0)].permute(2, 0, 1)).resize((size, size))
+    draw = ImageDraw.Draw(pil_img)
+    t_argmax = t.argmax(0)
+    ij = torch.where(t_argmax != 0)
+    for t in range(len(ij[0])):
+        i = ij[1][t]
+        j = ij[0][t]
+        draw.text((i * size // 32, j * size // 32), str(t_argmax[j, i].item() - 1), (255, 0, 0),
+                  font=ImageFont.truetype("DejaVuSansMono.ttf", 20))
+    pil_img.show()
+
 class pdataData(Dataset):
     def __init__(self, list_path, size, nclass):
         self.size = size
@@ -61,9 +73,6 @@ class pdataData(Dataset):
 
     def __len__(self):
         return len(self.label_files)
-
-    def showImgTensor(self, t):
-        transforms.ToPILImage()(colors[t.argmax(0)].permute(2, 0, 1)).resize((128, 128)).show()
 
     def __getitem__(self, item):
         data = torch.tensor(np.loadtxt(self.label_files[item]).astype(np.float32))
@@ -91,7 +100,7 @@ class pdataData(Dataset):
         if 0:
             Image.open(self.label_files[item].replace('labels8', 'images')
                        .replace('.txt', '.jpg')).resize((512, 512)).show()
-            self.showImgTensor(r)
+            showImgTensor(r)
             exit()
 
         return r
@@ -156,10 +165,19 @@ dataloader = torch.utils.data.DataLoader(
     shuffle=True)
 
 # Initialize generator and discriminator
-generator = Generator(ngf=16, nz=opt.latent_dim, n_classes=10).to(device)
-discriminator = Discriminator(ndf=12,  n_classes=10).to(device)
+generator = Generator(ngf=32, nz=opt.latent_dim, n_classes=10).to(device)
+discriminator = Discriminator(ndf=24, n_classes=10).to(device)
 
-if 0:
+# TODO Show results
+if 1:
+    generator.load_state_dict(torch.load('./pdata/1062000_gen.pth'))
+    noise = torch.randn(13, 10, device=device)
+    layout = generator(noise)
+    for i in range(len(noise)):
+        showImgTensor(layout[i], size=512)
+    exit()
+
+if 1:
     torch.save(generator.state_dict(), 'g.temp')
     torch.save(discriminator.state_dict(), 'd.temp')
     exit()
