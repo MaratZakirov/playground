@@ -8,13 +8,17 @@ from matplotlib.animation import FuncAnimation
 # Macro parameters
 x0 = 0; x1 = 16
 y0 = 0; y1 = 16
-N = 3000
-E = 2000
+# TODO set to 8000 for evaluation
+N = 4000
+E = 3700
 L = 10
 
 # State
-X = np.random.uniform((x0, y0), (x1, y1/10), (N, 2))
+X = np.random.uniform((x0, y0), (x0 + 1, y0 + 1), (N, 2))
+# TODO understand velocity distribution
 V = 6 * np.random.randn(N, 2)
+#V = 30 * (np.random.rand(N, 2) - 0.5)
+
 g = np.array([0, -9.8])
 dt = 0.01
 
@@ -80,8 +84,44 @@ Hph_data = np.array(Hph_data)
 Hfh_data = np.array(Hfh_data)
 
 # Print dT/dh = const * dE(Ek)/dh of stationary state
-#Ek_data[-1]
-#np.bincount(x_data[-1, :, 1], minlength=L)
+Levs = 6
+stEp = 1000
+Ek0 = Ek_data[-stEp:]
+h0 = x_data[-stEp:, :, 1]
+
+T_whole = []
+N_whole = []
+for e in range(stEp):
+    N_cur = np.zeros(Levs)
+    T_cur = np.zeros(Levs)
+
+    Ek0_cur = Ek0[e]
+    h0_cur = (Levs * (h0[e] + 0.2) / (y1 - y0 + 1)).astype(int)
+
+    for l in range(Levs):
+        if (h0_cur == l).sum() > 0:
+            T_cur[l] = Ek0_cur[h0_cur == l].mean()
+            N_cur[l] = (h0_cur == l).sum()
+
+    N_whole.append(N_cur)
+    T_whole.append(T_cur)
+
+N_whole = np.stack(N_whole).mean(0)
+T_whole = np.stack(T_whole).mean(0)
+
+print('T_whole', T_whole)
+print('N_whole', N_whole)
+
+fig, ax1 = plt.subplots()
+
+ax1.plot(N_whole, color='tab:blue')
+ax1.set_xlabel('h level')
+ax1.set_ylabel('Num of particles')
+ax2 = ax1.twinx()
+ax2.plot(T_whole, color='tab:red')
+ax2.set_ylabel('T or average kinetic energy of particles')
+fig.tight_layout()
+plt.show()
 
 # Print correlation
 Ek = Ek_data
