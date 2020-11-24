@@ -9,15 +9,16 @@ from matplotlib.animation import FuncAnimation
 x0 = 0; x1 = 16
 y0 = 0; y1 = 16
 # TODO set to 8000 for evaluation
-N = 4000
-E = 3700
+N = 8000
+E = 600000
 L = 10
+period = 1000
 
 # State
 X = np.random.uniform((x0, y0), (x0 + 1, y0 + 1), (N, 2))
 # TODO understand velocity distribution
-V = 6 * np.random.randn(N, 2)
-#V = 30 * (np.random.rand(N, 2) - 0.5)
+#V = 6 * np.random.randn(N, 2)
+V = 30 * (np.random.rand(N, 2) - 0.5)
 
 g = np.array([0, -9.8])
 dt = 0.01
@@ -48,31 +49,43 @@ for epoch in range(E):
     V = V + g * dt
 
     # Fix velocities to return particles in volume
-    V[(X_n[:, 0] < x0) + (X_n[:, 0] > x1), 0] *= -1
-    V[(X_n[:, 1] < y0) + (X_n[:, 1] > y1), 1] *= -1
+    Ix = (X_n[:, 0] < x0) + (X_n[:, 0] > x1)
+    Iy = (X_n[:, 1] < y0) + (X_n[:, 1] > y1)
+
+    V[Ix, 0] *= -1
+    V[Iy, 1] *= -1
+
+    # Add post random rotation
+    ralpha = np.random.uniform(low=-0.3, high=0.3, size=(Ix + Iy).sum())
+    Rrm = np.array([[np.cos(ralpha), -np.sin(ralpha)],
+                   [np.sin(ralpha), np.cos(ralpha)]]).transpose([2, 0, 1])
+    V[Ix + Iy] = np.stack([(V[Ix + Iy] * Rrm[..., 0]).sum(1),
+                           (V[Ix + Iy] * Rrm[..., 1]).sum(1)], axis=1)
 
     X = X_n
 
-    # Store statistics
-    x_data.append(X)
-    v_data.append(V)
-    Ek_data.append((V * V / 2).sum(1))
-    Ep_data.append(X[:, 1] * (-g[1]))
+    if epoch % period == 0:
+        print(epoch)
+        # Store statistics
+        x_data.append(X)
+        v_data.append(V)
+        Ek_data.append((V * V / 2).sum(1))
+        Ep_data.append(X[:, 1] * (-g[1]))
 
-    # Calculating entropy
-    Ek_lev = np.clip(Ek_data[-1] / dE, 0, L - 1).astype(int)
-    Ek2_lev = np.clip(np.sqrt(Ek_data[-1]) / dE2, 0, L - 1).astype(int)
-    Ep_lev = np.clip(Ep_data[-1] / dE, 0, L - 1).astype(int)
-    Ef_lev = np.clip((Ep_data[-1] + Ek_data[-1]) / dE, 0, L - 1).astype(int)
-    h_lev = np.clip((X[:, 1] - y0) / dh, 0, L - 1).astype(int)
-    p_kh = np.bincount(h_lev * L + Ek_lev, minlength = L * L) / N
-    p_k2h = np.bincount(h_lev * L + Ek2_lev, minlength = L * L) / N
-    p_ph = np.bincount(h_lev * L + Ep_lev, minlength=L * L) / N
-    p_pf = np.bincount(h_lev * L + Ef_lev, minlength=L * L) / N
-    Hkh_data.append(-np.sum(p_kh * np.log(p_kh + 0.00001)))
-    Hk2h_data.append(-np.sum(p_k2h * np.log(p_k2h + 0.00001)))
-    Hph_data.append(-np.sum(p_ph * np.log(p_ph + 0.00001)))
-    Hfh_data.append(-np.sum(p_pf * np.log(p_pf + 0.00001)))
+        # Calculating entropy
+        Ek_lev = np.clip(Ek_data[-1] / dE, 0, L - 1).astype(int)
+        Ek2_lev = np.clip(np.sqrt(Ek_data[-1]) / dE2, 0, L - 1).astype(int)
+        Ep_lev = np.clip(Ep_data[-1] / dE, 0, L - 1).astype(int)
+        Ef_lev = np.clip((Ep_data[-1] + Ek_data[-1]) / dE, 0, L - 1).astype(int)
+        h_lev = np.clip((X[:, 1] - y0) / dh, 0, L - 1).astype(int)
+        p_kh = np.bincount(h_lev * L + Ek_lev, minlength = L * L) / N
+        p_k2h = np.bincount(h_lev * L + Ek2_lev, minlength = L * L) / N
+        p_ph = np.bincount(h_lev * L + Ep_lev, minlength=L * L) / N
+        p_pf = np.bincount(h_lev * L + Ef_lev, minlength=L * L) / N
+        Hkh_data.append(-np.sum(p_kh * np.log(p_kh + 0.00001)))
+        Hk2h_data.append(-np.sum(p_k2h * np.log(p_k2h + 0.00001)))
+        Hph_data.append(-np.sum(p_ph * np.log(p_ph + 0.00001)))
+        Hfh_data.append(-np.sum(p_pf * np.log(p_pf + 0.00001)))
 
 x_data = np.stack(x_data)
 v_data = np.stack(v_data)
@@ -84,8 +97,8 @@ Hph_data = np.array(Hph_data)
 Hfh_data = np.array(Hfh_data)
 
 # Print dT/dh = const * dE(Ek)/dh of stationary state
-Levs = 6
-stEp = 1000
+Levs = 3
+stEp = 100000 // period
 Ek0 = Ek_data[-stEp:]
 h0 = x_data[-stEp:, :, 1]
 
@@ -110,7 +123,7 @@ N_whole = np.stack(N_whole).mean(0)
 T_whole = np.stack(T_whole).mean(0)
 
 print('T_whole', T_whole)
-print('N_whole', N_whole)
+print('N_whole', N_whole, N_whole.sum())
 
 fig, ax1 = plt.subplots()
 
@@ -155,6 +168,10 @@ plt.show()
 fig, _ = plt.subplots()
 plt.xlim(x0, x1)
 plt.ylim(y0, y1)
+
+if 1:
+    plt.show()
+    exit()
 
 scatter = plt.scatter(x_data[0, :, 0], x_data[0, :, 1], s=4)
 def animate(i):
