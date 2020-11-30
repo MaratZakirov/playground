@@ -10,15 +10,23 @@ x0 = 0; x1 = 16
 y0 = 0; y1 = 16
 # TODO set to 8000 for evaluation
 N = 8000
-E = 600000
+E = 1000000
 L = 10
 period = 1000
+SAVEFIG = True
+MAKEANIM = False
+MAXVELL = True
+
+if SAVEFIG:
+    plt.ioff()
 
 # State
 X = np.random.uniform((x0, y0), (x0 + 1, y0 + 1), (N, 2))
 # TODO understand velocity distribution
-#V = 6 * np.random.randn(N, 2)
-V = 30 * (np.random.rand(N, 2) - 0.5)
+if MAXVELL:
+    V = 6 * np.random.randn(N, 2)
+else:
+    V = 30 * (np.random.rand(N, 2) - 0.5)
 
 g = np.array([0, -9.8])
 dt = 0.01
@@ -56,7 +64,7 @@ for epoch in range(E):
     V[Iy, 1] *= -1
 
     # Add post random rotation
-    ralpha = np.random.uniform(low=-0.3, high=0.3, size=(Ix + Iy).sum())
+    ralpha = np.random.uniform(low=-1.3, high=1.3, size=(Ix + Iy).sum())
     Rrm = np.array([[np.cos(ralpha), -np.sin(ralpha)],
                    [np.sin(ralpha), np.cos(ralpha)]]).transpose([2, 0, 1])
     V[Ix + Iy] = np.stack([(V[Ix + Iy] * Rrm[..., 0]).sum(1),
@@ -98,7 +106,7 @@ Hfh_data = np.array(Hfh_data)
 
 # Print dT/dh = const * dE(Ek)/dh of stationary state
 Levs = 3
-stEp = 100000 // period
+stEp = len(Ek_data) // 6
 Ek0 = Ek_data[-stEp:]
 h0 = x_data[-stEp:, :, 1]
 
@@ -134,7 +142,12 @@ ax2 = ax1.twinx()
 ax2.plot(T_whole, color='tab:red')
 ax2.set_ylabel('T or average kinetic energy of particles')
 fig.tight_layout()
-plt.show()
+
+if SAVEFIG:
+    plt.savefig('T_grad.png')
+    plt.close()
+else:
+    plt.show()
 
 # Print correlation
 Ek = Ek_data
@@ -148,13 +161,23 @@ plt.plot(rk)
 plt.plot(rp)
 plt.plot(rf)
 plt.legend(['Ek with h', 'Ep with h', 'Ef with h'])
-plt.show()
+
+if SAVEFIG:
+    plt.savefig('Ek_Ep_Ef_cor_height.png')
+    plt.close()
+else:
+    plt.show()
 
 plt.ylim(0, Ef_const.sum() * 2)
 plt.plot(Ep_data.sum(1) + Ek_data.sum(1))
 plt.plot(Ef_const.sum().repeat(len(Ep_data)))
 plt.legend(['Current full energy', 'Old full energy'])
-plt.show()
+
+if SAVEFIG:
+    plt.savefig('ConservationOfEnergy_check.png')
+    plt.close()
+else:
+    plt.show()
 
 plt.plot(Hkh_data)
 plt.plot(Hk2h_data)
@@ -163,14 +186,20 @@ plt.plot(Hfh_data)
 plt.ylabel('H (Entropy)')
 plt.legend(['H(Ek, h)', 'H(v, h)', 'H(Ep, h)', 'H(Ef, h)'])
 plt.xlabel('time')
-plt.show()
+
+if SAVEFIG:
+    plt.savefig('SoCalledEntropyCheck.png')
+    plt.close()
+else:
+    plt.show()
 
 fig, _ = plt.subplots()
 plt.xlim(x0, x1)
 plt.ylim(y0, y1)
 
-if 1:
-    plt.show()
+if not MAKEANIM:
+    if not SAVEFIG:
+        plt.show()
     exit()
 
 scatter = plt.scatter(x_data[0, :, 0], x_data[0, :, 1], s=4)
