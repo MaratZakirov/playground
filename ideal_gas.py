@@ -5,19 +5,21 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 
+np.random.seed(0)
+
 # Macro parameters
 x0 = 0; x1 = 16
 y0 = 0; y1 = 16
 # TODO set to 8000 for evaluation
-N = 100
-E = 1000
+N = 8400
+E = 20000
 L = 10
-period = 1
+period = 30
 SAVEFIG = False
 MAKEANIM = True
 MAXVELL = True
 ENANLEMIX = 'maxwell'
-ENABLETURN = False
+ENABLETURN = True
 
 if SAVEFIG:
     plt.ioff()
@@ -62,11 +64,13 @@ for epoch in range(E):
     Ix = (X_n[:, 0] < x0) + (X_n[:, 0] > x1)
     Iy = (X_n[:, 1] < y0) + (X_n[:, 1] > y1)
     Iy0 = X_n[:, 1] < y0
+    Iy1 = X_n[:, 1] > y1
 
     V[Ix, 0] *= -1
-    V[Iy, 1] *= -1
+    V[Iy0, 1] = np.abs(V[Iy0, 1])
+    V[Iy1, 1] = -np.abs(V[Iy1, 1])
 
-    if ENANLEMIX == 'uniform':
+    if ENANLEMIX == 'uniform' and Iy0.sum() >= 2:
         alpha = 0.4
         n = Iy0.sum()
 
@@ -83,7 +87,7 @@ for epoch in range(E):
 
         V[Iy0] = (V[Iy0] / np.sqrt(E)) * np.sqrt(E_n)
 
-    if ENANLEMIX == 'maxwell':
+    if ENANLEMIX == 'maxwell' and Iy0.sum() >= 2:
         alpha = 0.4
         n = Iy0.sum()
 
@@ -104,7 +108,7 @@ for epoch in range(E):
         I_o_pos_not = ~((X[:, 0] > (x0 + eps)) * (X[:, 0] < (x1 - eps)) * (X[:, 1] > (y0 + eps)) * (X[:, 1] < (y1 - eps)))
         I_rr = I_n_pos_in * I_o_pos_not
 
-        ralpha = np.random.uniform(low=-0.3, high=0.3, size=(I_rr).sum())
+        ralpha = np.random.uniform(low=-0.1, high=0.1, size=(I_rr).sum())
         Rrm = np.array([[np.cos(ralpha), -np.sin(ralpha)],
                         [np.sin(ralpha), np.cos(ralpha)]]).transpose([2, 0, 1])
 
@@ -112,9 +116,15 @@ for epoch in range(E):
         V[I_rr] = np.stack([(V[I_rr] * Rrm[..., 0]).sum(1),
                             (V[I_rr] * Rrm[..., 1]).sum(1)], axis=1)
 
+        if (V != V).any():
+            assert 0
+
     X = X_n
 
     if epoch % period == 0:
+        if (V != V).any():
+            assert 0
+
         print(epoch)
         # Store statistics
         x_data.append(X)
@@ -146,8 +156,10 @@ Hk2h_data = np.array(Hk2h_data)
 Hph_data = np.array(Hph_data)
 Hfh_data = np.array(Hfh_data)
 
+print('Stalled particles:', (x_data[-234:, :, 1].max(axis=0) < 0).sum())
+
 # Print dT/dh = const * dE(Ek)/dh of stationary state
-Levs = 5
+Levs = 14
 stEp = len(Ek_data) // 6
 Ek0 = Ek_data[-stEp:]
 h0 = x_data[-stEp:, :, 1]
