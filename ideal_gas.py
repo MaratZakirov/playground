@@ -9,13 +9,15 @@ from matplotlib.animation import FuncAnimation
 x0 = 0; x1 = 16
 y0 = 0; y1 = 16
 # TODO set to 8000 for evaluation
-N = 20#000#800
-E = 1000#000
+N = 100
+E = 1000
 L = 10
 period = 1
 SAVEFIG = False
 MAKEANIM = True
 MAXVELL = True
+ENANLEMIX = 'maxwell'
+ENABLETURN = False
 
 if SAVEFIG:
     plt.ioff()
@@ -24,7 +26,7 @@ if SAVEFIG:
 X = np.random.uniform((x0, y0), (x0 + 1, y0 + 1), (N, 2))
 # TODO understand velocity distribution
 if MAXVELL:
-    V = 6 * np.random.randn(N, 2)
+    V = 13 * np.random.randn(N, 2)
 else:
     V = 30 * (np.random.rand(N, 2) - 0.5)
 
@@ -59,23 +61,56 @@ for epoch in range(E):
     # Fix velocities to return particles in volume
     Ix = (X_n[:, 0] < x0) + (X_n[:, 0] > x1)
     Iy = (X_n[:, 1] < y0) + (X_n[:, 1] > y1)
+    Iy0 = X_n[:, 1] < y0
 
     V[Ix, 0] *= -1
     V[Iy, 1] *= -1
 
-    eps = 0.1
-    # Find situation when particles are just in inner volume
-    I_n_pos_in = (X_n[:, 0] > (x0 + eps)) * (X_n[:, 0] < (x1 - eps)) * (X_n[:, 1] > (y0 + eps)) * (X_n[:, 1] < (y1 - eps))
-    I_o_pos_not = ~((X[:, 0] > (x0 + eps)) * (X[:, 0] < (x1 - eps)) * (X[:, 1] > (y0 + eps)) * (X[:, 1] < (y1 - eps)))
-    I_rr = I_n_pos_in * I_o_pos_not
+    if ENANLEMIX == 'uniform':
+        alpha = 0.4
+        n = Iy0.sum()
 
-    ralpha = np.random.uniform(low=-1.3, high=1.3, size=(I_rr).sum())
-    Rrm = np.array([[np.cos(ralpha), -np.sin(ralpha)],
-                    [np.sin(ralpha), np.cos(ralpha)]]).transpose([2, 0, 1])
+        # Storing kinetic energy of affected particles
+        E = np.linalg.norm(V[Iy0], axis=1, keepdims=True) ** 2
 
-    # Calculate potential new velocities
-    V[I_rr] = np.stack([(V[I_rr] * Rrm[..., 0]).sum(1),
-                        (V[I_rr] * Rrm[..., 1]).sum(1)], axis=1)
+        # Creating random mixing matrix
+        M = np.random.uniform(low=0, high=1, size=(n, n))
+        M = M / M.sum(axis=1, keepdims=True)
+        M = np.eye(n) * (1 - alpha) + alpha * M
+
+        E_n = np.dot(M, E)
+        E_n = E_n * (E.sum() / E_n.sum())
+
+        V[Iy0] = (V[Iy0] / np.sqrt(E)) * np.sqrt(E_n)
+
+    if ENANLEMIX == 'maxwell':
+        alpha = 0.4
+        n = Iy0.sum()
+
+        # Storing kinetic energy of affected particles
+        E = np.linalg.norm(V[Iy0], axis=1, keepdims=True) ** 2
+
+        E_n = np.clip(E.std() * np.random.randn(n, 1) + E.mean(), a_min=0, a_max=1000000)
+        E_n = E_n * (E.sum() / E_n.sum())
+        E_n = E * (1 - alpha) + E_n * alpha
+        E_n = E_n * (E.sum() / E_n.sum())
+
+        V[Iy0] = (V[Iy0] / np.sqrt(E)) * np.sqrt(E_n)
+
+    if ENABLETURN:
+        eps = 1.0
+        # Find situation when particles are just in inner volume
+        I_n_pos_in = (X_n[:, 0] > (x0 + eps)) * (X_n[:, 0] < (x1 - eps)) * (X_n[:, 1] > (y0 + eps)) * (X_n[:, 1] < (y1 - eps))
+        I_o_pos_not = ~((X[:, 0] > (x0 + eps)) * (X[:, 0] < (x1 - eps)) * (X[:, 1] > (y0 + eps)) * (X[:, 1] < (y1 - eps)))
+        I_rr = I_n_pos_in * I_o_pos_not
+
+        ralpha = np.random.uniform(low=-0.3, high=0.3, size=(I_rr).sum())
+        Rrm = np.array([[np.cos(ralpha), -np.sin(ralpha)],
+                        [np.sin(ralpha), np.cos(ralpha)]]).transpose([2, 0, 1])
+
+        # Calculate potential new velocities
+        V[I_rr] = np.stack([(V[I_rr] * Rrm[..., 0]).sum(1),
+                            (V[I_rr] * Rrm[..., 1]).sum(1)], axis=1)
 
     X = X_n
 
@@ -112,7 +147,7 @@ Hph_data = np.array(Hph_data)
 Hfh_data = np.array(Hfh_data)
 
 # Print dT/dh = const * dE(Ek)/dh of stationary state
-Levs = 3
+Levs = 5
 stEp = len(Ek_data) // 6
 Ek0 = Ek_data[-stEp:]
 h0 = x_data[-stEp:, :, 1]
