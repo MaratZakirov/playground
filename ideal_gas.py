@@ -9,12 +9,12 @@ from matplotlib.animation import FuncAnimation
 x0 = 0; x1 = 16
 y0 = 0; y1 = 16
 # TODO set to 8000 for evaluation
-N = 8000
-E = 1000000
+N = 20#000#800
+E = 1000#000
 L = 10
-period = 1000
-SAVEFIG = True
-MAKEANIM = False
+period = 1
+SAVEFIG = False
+MAKEANIM = True
 MAXVELL = True
 
 if SAVEFIG:
@@ -63,12 +63,19 @@ for epoch in range(E):
     V[Ix, 0] *= -1
     V[Iy, 1] *= -1
 
-    # Add post random rotation
-    ralpha = np.random.uniform(low=-1.3, high=1.3, size=(Ix + Iy).sum())
+    eps = 0.1
+    # Find situation when particles are just in inner volume
+    I_n_pos_in = (X_n[:, 0] > (x0 + eps)) * (X_n[:, 0] < (x1 - eps)) * (X_n[:, 1] > (y0 + eps)) * (X_n[:, 1] < (y1 - eps))
+    I_o_pos_not = ~((X[:, 0] > (x0 + eps)) * (X[:, 0] < (x1 - eps)) * (X[:, 1] > (y0 + eps)) * (X[:, 1] < (y1 - eps)))
+    I_rr = I_n_pos_in * I_o_pos_not
+
+    ralpha = np.random.uniform(low=-1.3, high=1.3, size=(I_rr).sum())
     Rrm = np.array([[np.cos(ralpha), -np.sin(ralpha)],
-                   [np.sin(ralpha), np.cos(ralpha)]]).transpose([2, 0, 1])
-    V[Ix + Iy] = np.stack([(V[Ix + Iy] * Rrm[..., 0]).sum(1),
-                           (V[Ix + Iy] * Rrm[..., 1]).sum(1)], axis=1)
+                    [np.sin(ralpha), np.cos(ralpha)]]).transpose([2, 0, 1])
+
+    # Calculate potential new velocities
+    V[I_rr] = np.stack([(V[I_rr] * Rrm[..., 0]).sum(1),
+                        (V[I_rr] * Rrm[..., 1]).sum(1)], axis=1)
 
     X = X_n
 
@@ -194,8 +201,8 @@ else:
     plt.show()
 
 fig, _ = plt.subplots()
-plt.xlim(x0, x1)
-plt.ylim(y0, y1)
+plt.xlim(x0-1, x1+1)
+plt.ylim(y0-1, y1+1)
 
 if not MAKEANIM:
     if not SAVEFIG:
