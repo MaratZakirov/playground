@@ -4,31 +4,34 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
-
+from numpy.linalg import norm
 np.random.seed(0)
 
 # Macro parameters
 x0 = 0; x1 = 16
 y0 = 0; y1 = 16
 # TODO set to 8000 for evaluation
-N = 8400
-E = 20000
+N = 800
+E = 30000
 L = 10
-period = 30
+period = 10
 SAVEFIG = False
 MAKEANIM = True
 MAXVELL = True
 ENANLEMIX = 'maxwell'
-ENABLETURN = True
+ENABLETURN = False
+ENABLECOL = True
 
 if SAVEFIG:
     plt.ioff()
 
 # State
+m = np.random.choice([0.8, 1.2], size=(N, 1))
+r = 0.01
 X = np.random.uniform((x0, y0), (x0 + 1, y0 + 1), (N, 2))
 # TODO understand velocity distribution
-if MAXVELL:
-    V = 13 * np.random.randn(N, 2)
+if 1:#MAXVELL:
+    V = 8 * np.random.randn(N, 2)
 else:
     V = 30 * (np.random.rand(N, 2) - 0.5)
 
@@ -51,7 +54,7 @@ Hph_data = []
 Hfh_data = []
 
 # Every particle in ideal gas model has same amount of energy
-Ef_const = X[:, 1] * (-g[1]) + (V * V / 2).sum(1)
+Ef_const = m[:, 0] * X[:, 1] * (-g[1]) + (m * V * V / 2).sum(1)
 dE = (Ef_const.mean() + 4 * Ef_const.std()) / L
 dE2 = (np.sqrt(Ef_const).mean() + 4 * np.sqrt(Ef_const).std()) / L
 dh = (y1 - y0) / L
@@ -70,7 +73,7 @@ for epoch in range(E):
     V[Iy0, 1] = np.abs(V[Iy0, 1])
     V[Iy1, 1] = -np.abs(V[Iy1, 1])
 
-    if ENANLEMIX == 'uniform' and Iy0.sum() >= 2:
+    if 0:#ENANLEMIX == 'uniform' and Iy0.sum() >= 2:
         alpha = 0.4
         n = Iy0.sum()
 
@@ -87,12 +90,12 @@ for epoch in range(E):
 
         V[Iy0] = (V[Iy0] / np.sqrt(E)) * np.sqrt(E_n)
 
-    if ENANLEMIX == 'maxwell' and Iy0.sum() >= 2:
+    if 0:#ENANLEMIX == 'maxwell' and Iy0.sum() >= 2:
         alpha = 0.4
         n = Iy0.sum()
 
         # Storing kinetic energy of affected particles
-        E = np.linalg.norm(V[Iy0], axis=1, keepdims=True) ** 2
+        E = m[Iy0] * np.linalg.norm(V[Iy0], axis=1, keepdims=True) ** 2
 
         E_n = np.clip(E.std() * np.random.randn(n, 1) + E.mean(), a_min=0, a_max=1000000)
         E_n = E_n * (E.sum() / E_n.sum())
@@ -101,7 +104,10 @@ for epoch in range(E):
 
         V[Iy0] = (V[Iy0] / np.sqrt(E)) * np.sqrt(E_n)
 
-    if ENABLETURN:
+        if (V != V).any():
+            assert 0
+
+    if 0:#ENABLETURN:
         eps = 1.0
         # Find situation when particles are just in inner volume
         I_n_pos_in = (X_n[:, 0] > (x0 + eps)) * (X_n[:, 0] < (x1 - eps)) * (X_n[:, 1] > (y0 + eps)) * (X_n[:, 1] < (y1 - eps))
@@ -119,6 +125,50 @@ for epoch in range(E):
         if (V != V).any():
             assert 0
 
+    if 1:#ENABLECOL:
+        D = np.linalg.norm(X_n[:, np.newaxis, :] - X_n[np.newaxis, ...], axis=2, keepdims=False)
+        num_of_col = ((D < 2 * r).sum() - N) // 2
+        # Here get nearest particle to collision with
+        D = D + np.eye(N) * 1000
+        N_dist = D.min(axis=1)
+        N_part = D.argmin(axis=1)
+        I = (N_dist < 2 * r)
+
+        if I.sum() != 0:
+            P_a = np.arange(N)[I]
+            P_b = N_part[I]
+
+            # Ensure uniqueness
+            P_ab = np.sort(np.stack([P_a, P_b], axis=1), axis=1)
+            P_ab, C = np.unique(P_ab, axis=0, return_counts=True)
+            P_ab = P_ab[C == 2]
+
+            P_a = np.concatenate([P_ab[:, 0], P_ab[:, 1]])
+            P_b = np.concatenate([P_ab[:, 1], P_ab[:, 0]])
+
+            # No duplicates!
+            assert len(np.unique(P_b)) == len(P_b)
+
+            m_a = m[P_a]
+            m_b = m[P_b]
+            v_a = V[P_a]
+            v_b = V[P_b]
+
+            # Calculate energy before
+            E_k_ab = m_a[:, 0] * (np.linalg.norm(V[P_a], axis=1) ** 2) + m_b[:, 0] * (np.linalg.norm(V[P_b], axis=1) ** 2)
+
+            V[P_a] = ((m_a - m_b) * v_a + 2 * m_b * v_b)/(m_a + m_b)
+            V[P_b] = ((m_b - m_a) * v_b + 2 * m_a * v_a)/(m_a + m_b)
+
+            # Calculate energy after
+            E_k_ab_new = m_a[:, 0] * (np.linalg.norm(V[P_a], axis=1) ** 2) + m_b[:, 0] * (np.linalg.norm(V[P_b], axis=1) ** 2)
+
+            # Energy levels must mach
+            assert ((E_k_ab / E_k_ab_new).round(14) != 1.0).sum() == 0
+
+            if epoch % period == 0:
+                print('Number collisions:', num_of_col, '/', len(P_a)//2, 'mean:', X_n[P_a, 1].mean(), 'max:', X_n[P_a, 1].max())
+
     X = X_n
 
     if epoch % period == 0:
@@ -129,8 +179,8 @@ for epoch in range(E):
         # Store statistics
         x_data.append(X)
         v_data.append(V)
-        Ek_data.append((V * V / 2).sum(1))
-        Ep_data.append(X[:, 1] * (-g[1]))
+        Ek_data.append((m * V * V / 2).sum(1))
+        Ep_data.append(m[:, 0] * X[:, 1] * (-g[1]))
 
         # Calculating entropy
         Ek_lev = np.clip(Ek_data[-1] / dE, 0, L - 1).astype(int)
@@ -159,7 +209,7 @@ Hfh_data = np.array(Hfh_data)
 print('Stalled particles:', (x_data[-234:, :, 1].max(axis=0) < 0).sum())
 
 # Print dT/dh = const * dE(Ek)/dh of stationary state
-Levs = 14
+Levs = 4
 stEp = len(Ek_data) // 6
 Ek0 = Ek_data[-stEp:]
 h0 = x_data[-stEp:, :, 1]
